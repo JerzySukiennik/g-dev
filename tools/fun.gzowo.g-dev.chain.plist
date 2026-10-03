@@ -11,7 +11,7 @@
 	<string>fun.gzowo.g-dev.chain</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Users/jurek/Downloads/Claude/Projects/AIe/G-Images/.venv/bin/python</string>
+		<string>/Users/jurek/Downloads/Claude/Projects/AIe/G-Micro/.venv/bin/python</string>
 		<string>/Users/jurek/Downloads/Claude/Projects/AIe/G-Dev/tools/chain.py</string>
 	</array>
 	<key>RunAtLoad</key>
