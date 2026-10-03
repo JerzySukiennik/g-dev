@@ -18,10 +18,12 @@ tool-call format, not one that fixes real repositories alone.
 ## Plan
 
 1. Tokenizer: 32k BPE on code and English, every digit split, tool-call tokens reserved.
-2. Pretraining mix, permissive licenses only: The Stack v2 (permissive subset),
-   FineWeb-Edu for English, plus docs and Q&A. Fill-in-the-middle on part of the code.
+2. Pretraining mix, permissive licenses only, focused on front-end: ~60% HTML/CSS/JS/TS
+   (canvas, SVG, CSS animation, 2D games) from The Stack v2 (permissive subset), ~15%
+   Python, ~25% English prose (FineWeb-Edu). Fill-in-the-middle on part of the code.
 3. SFT: chat and instruction data, then tool-use traces in one fixed text format.
-4. Eval: HumanEval and MBPP pass@1, plus execution of generated tool calls.
+4. Eval: generated pages opened in a headless browser (no console errors, non-blank
+   render), MultiPL-E JS pass@1, and execution of generated tool calls.
 
 ## Layout
 
