@@ -1,20 +1,25 @@
 """Fetch G-Dev's pretraining corpus, one source at a time, into text files.
 
 Every source is permissively licensed or public: nothing from a gated dataset,
-nothing under GPL. Each source writes documents separated by a line holding
-only DOC_SEP, the format pack_data.py reads. Resumable: finished shards are
-recorded in <out>.done and skipped on a rerun.
+nothing under GPL, LGPL or MPL. Documents are separated by a line holding only
+DOC_SEP, the format pack_data.py reads. Resumable: finished shards are recorded
+next to the output and skipped on a rerun.
 
   html    common-pile/stackv2_html_filtered  (Blue Oak licenses only)
-  js      codeparrot/github-code-clean JavaScript, license column filtered
-  stack   common-pile/stackv2 raw shards, language filtered (CSS, TypeScript,
-          Python, SVG, ...), shards picked from data/shardmap.json
-  md      common-pile/stackv2_edu_filtered Markdown (docs and READMEs)
-  prose   HuggingFaceFW/fineweb-edu (ODC-By)
+  md      common-pile/stackv2_edu_filtered   (Markdown: docs and READMEs)
+  code    codeparrot/github-code-clean       (JavaScript, TypeScript, CSS, Python),
+          one pass over randomly ordered shards feeding one file per language
+          group, license column filtered. Measured on three shards: each holds the
+          same mix (about 100 MB JavaScript, 63 Python, 30 TypeScript, 27 CSS of
+          ~357 MB), so TypeScript sets how many shards are needed.
+  prose   HuggingFaceFW/fineweb-edu          (ODC-By)
+
+The raw common-pile/stackv2 was probed and rejected: its shards hold C, C++,
+C#, CSV, Jupyter and CSS, and none of Python, TypeScript or SCSS turned up.
 
 Usage:
-    python data/fetch_corpus.py html --out /kaggle/working/corpus_html.txt --max-chars 1.6e9
-    python data/fetch_corpus.py stack --out /tmp/x/stack --groups 'css:CSS,SCSS:1e9;ts:TypeScript,TSX:2e9'
+    python data/fetch_corpus.py html --out /tmp/gdev/corpus_html.txt --max-chars 1.8e9
+    python data/fetch_corpus.py code --out /tmp/gdev/x --groups 'js:JavaScript:3.2e9;ts:TypeScript:2.2e9'
 """
 
 import argparse
@@ -25,9 +30,9 @@ import json
 import os
 import random
 import re
-import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 DOC_SEP = "<|doc|>"
@@ -38,8 +43,8 @@ HTML_SHARDS = [f"{HF}/common-pile/stackv2_html_filtered/resolve/main/stackv2_htm
                for i in range(5)]
 MD_SHARDS = [f"{HF}/common-pile/stackv2_edu_filtered/resolve/main/stack-edu-{i:04d}.json.gz"
              for i in range(4)]
-STACK_SHARD = HF + "/common-pile/stackv2/resolve/main/documents/{i:05d}_stackv2.jsonl.gz"
-GITHUB_CODE_PARQUET = "https://huggingface.co/api/datasets/codeparrot/github-code-clean/parquet/{cfg}/train/{i}.parquet"
+CODE_SHARD = f"{HF}/codeparrot/github-code-clean/resolve/main/data/train-{{i:05d}}-of-00880.parquet"
+CODE_SHARDS = 880
 
 BAD_PATH = re.compile(r"(node_modules|bower_components|/vendor/|/vendors/|/dist/|/build/|"
                       r"\.min\.|bundle|/lib/jquery|/polyfill|/assets/js/plugins|"
@@ -107,11 +112,10 @@ class Sink:
         self.kept += 1
         return True
 
-    def finish_shard(self, key: str):
+    def mark_done(self, key: str):
         self.f.flush()
         self.done.add(key)
         self.done_file.write_text("\n".join(sorted(self.done)))
-        log(f"  {key}: kept {self.kept:,} dupes {self.dupes:,} total {self.chars/1e9:.2f}G chars")
 
     def close(self):
         self.f.close()
@@ -128,142 +132,110 @@ def open_stream(url: str):
     raise SystemExit(f"cannot open {url}")
 
 
-def read_jsonl_shard(url, sink, accept, langs=None):
-    """Stream one json(l).gz shard into the sink. Returns False if the stream died
-    mid-way, in which case the caller retries the shard; dedup state makes the
-    repeated head of the shard harmless."""
-    try:
-        with io.TextIOWrapper(open_stream(url), encoding="utf-8", errors="ignore") as g:
-            for line in g:
-                if sink.full():
-                    break
-                try:
-                    d = json.loads(line)
-                except ValueError:
-                    continue
-                m = d.get("metadata", {})
-                if langs and m.get("language") not in langs:
-                    continue
-                text = d["text"]
-                path = m.get("path") or m.get("filename") or ""
-                if accept(text, path):
-                    sink.add(text, path)
-        return True
-    except Exception as e:
-        log(f"stream broke: {e}")
-        return False
-
-
-def run_shards(urls, sink, accept, langs=None):
+def run_json_shards(urls, sink, accept):
     for url in urls:
         key = url.rsplit("/", 1)[-1]
-        if key in sink.done:
+        if key in sink.done or sink.full():
             continue
-        if sink.full():
-            break
-        for _ in range(4):
-            if read_jsonl_shard(url, sink, accept, langs):
-                break
-        sink.finish_shard(key)
-
-
-def fetch_html(a, sink):
-    run_shards(HTML_SHARDS, sink, lambda t, p: keep_code(t, p))
-
-
-def fetch_md(a, sink):
-    sink.code = False
-    run_shards(MD_SHARDS, sink, lambda t, p: 400 <= len(t) <= 60_000)
-
-
-def fetch_stack(a):
-    """One pass over the raw shards feeding several per-group sinks, so that
-    CSS, TypeScript, Python and the rest share a single download instead of
-    each streaming the same 2 GB shards."""
-    outdir = a.out.parent
-    groups = {}
-    for spec in a.groups.split(";"):
-        name, langs, chars = spec.split(":")
-        groups[name] = (set(langs.split(",")), Sink(outdir / f"corpus_{name}.txt", float(chars)))
-    wanted = set().union(*(l for l, _ in groups.values()))
-    lang_to = {}
-    for name, (langs, sink) in groups.items():
-        for l in langs:
-            lang_to[l] = sink
-    smap = json.load(open(Path(__file__).with_name("shardmap.json")))
-    scored = []
-    for i, d in smap.items():
-        total = sum(d.values()) or 1
-        share = sum(v for k, v in d.items() if k in wanted) / total
-        if share > 0.05:
-            scored.append((share, int(i)))
-    scored.sort(reverse=True)
-    done_file = outdir / "stack.done"
-    done = set(done_file.read_text().split()) if done_file.exists() else set()
-    log(f"{len(scored)} candidate shards for {sorted(wanted)}")
-    for _, i in scored:
-        if all(s.full() for _, s in groups.values()):
-            break
-        key = f"{i:05d}"
-        if key in done:
-            continue
-        url = STACK_SHARD.format(i=i)
         for _ in range(4):
             try:
                 with io.TextIOWrapper(open_stream(url), encoding="utf-8", errors="ignore") as g:
                     for line in g:
+                        if sink.full():
+                            break
                         try:
                             d = json.loads(line)
                         except ValueError:
                             continue
                         m = d.get("metadata", {})
-                        sink = lang_to.get(m.get("language"))
-                        if sink is None or sink.full():
-                            continue
                         path = m.get("path") or m.get("filename") or ""
-                        if keep_code(d["text"], path):
+                        if accept(d["text"], path):
                             sink.add(d["text"], path)
                 break
             except Exception as e:
                 log(f"stream broke: {e}")
-        done.add(key)
-        done_file.write_text("\n".join(sorted(done)))
-        log(f"  shard {key}: " + ", ".join(f"{n} {s.chars/1e9:.2f}G" for n, (_, s) in groups.items()))
+        sink.mark_done(key)
+        log(f"  {key}: kept {sink.kept:,} dupes {sink.dupes:,} total {sink.chars/1e9:.2f}G chars")
+
+
+def fetch_html(a, sink):
+    run_json_shards(HTML_SHARDS, sink, lambda t, p: keep_code(t, p))
+
+
+def fetch_md(a, sink):
+    sink.code = False
+    run_json_shards(MD_SHARDS, sink, lambda t, p: 400 <= len(t) <= 60_000)
+
+
+def download(url: str, path: Path):
+    for attempt in range(5):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers()), timeout=120) as r, \
+                    open(f"{path}.part", "wb") as f:
+                while chunk := r.read(1 << 22):
+                    f.write(chunk)
+            os.replace(f"{path}.part", path)
+            return True
+        except Exception as e:
+            log(f"retry {attempt+1} {path.name}: {e}")
+            time.sleep(10 * (attempt + 1))
+    return False
+
+
+def fetch_code(a):
+    """One pass over github-code-clean feeding several per-language sinks. The
+    next shard downloads while the current one is filtered."""
+    import pyarrow.parquet as pq
+    outdir = a.out.parent
+    outdir.mkdir(parents=True, exist_ok=True)
+    groups = {}
+    for spec in a.groups.split(";"):
+        name, langs, chars = spec.split(":")
+        groups[name] = (set(langs.split(",")), Sink(outdir / f"corpus_{name}.txt", float(chars)))
+    lang_to = {l: s for langs, s in groups.values() for l in langs}
+    done_file = outdir / "code.done"
+    done = set(done_file.read_text().split()) if done_file.exists() else set()
+    order = list(range(CODE_SHARDS))
+    random.Random(7).shuffle(order)
+    order = [i for i in order if f"{i:05d}" not in done]
+    raw = outdir / "raw_code"
+    raw.mkdir(exist_ok=True)
+
+    def path_of(i):
+        return raw / f"{i:05d}.parquet"
+
+    def fetch(i):
+        return i, download(CODE_SHARD.format(i=i), path_of(i))
+
+    with ThreadPoolExecutor(2) as pool:
+        pending = [pool.submit(fetch, i) for i in order[:2]]
+        nxt = 2
+        while pending:
+            if all(s.full() for _, s in groups.values()):
+                break
+            i, ok = pending.pop(0).result()
+            if nxt < len(order):
+                pending.append(pool.submit(fetch, order[nxt]))
+                nxt += 1
+            if not ok:
+                continue
+            pf = pq.ParquetFile(path_of(i))
+            for batch in pf.iter_batches(columns=["code", "path", "language", "license"], batch_size=2048):
+                cols = [batch.column(c).to_pylist() for c in range(4)]
+                for code, p, lang, lic in zip(*cols):
+                    sink = lang_to.get(lang)
+                    if sink is None or sink.full() or lic not in PERMISSIVE or not code:
+                        continue
+                    if keep_code(code, p or ""):
+                        sink.add(code, p or "")
+            path_of(i).unlink()
+            done.add(f"{i:05d}")
+            done_file.write_text("\n".join(sorted(done)))
+            for _, s in groups.values():
+                s.f.flush()
+            log(f"  shard {i:05d}: " + ", ".join(f"{n} {s.chars/1e9:.2f}G" for n, (_, s) in groups.items()))
     for _, s in groups.values():
         s.close()
-
-
-def fetch_js(a, sink):
-    import pyarrow.parquet as pq
-    raw = sink.out.parent / "raw_js"
-    raw.mkdir(exist_ok=True)
-    for i in range(a.parquet_shards):
-        key = f"JavaScript-all-{i}"
-        if key in sink.done or sink.full():
-            continue
-        path = raw / f"{key}.parquet"
-        if not path.exists() or path.stat().st_size < 1_000_000:
-            for attempt in range(5):
-                try:
-                    url = GITHUB_CODE_PARQUET.format(cfg="JavaScript-all", i=i)
-                    with urllib.request.urlopen(urllib.request.Request(url, headers=headers()), timeout=120) as r, \
-                            open(f"{path}.part", "wb") as f:
-                        while chunk := r.read(1 << 22):
-                            f.write(chunk)
-                    os.replace(f"{path}.part", path)
-                    break
-                except Exception as e:
-                    log(f"retry {attempt+1} {key}: {e}")
-                    time.sleep(10 * (attempt + 1))
-            else:
-                break
-        pf = pq.ParquetFile(path)
-        for batch in pf.iter_batches(columns=["code", "path", "license"], batch_size=4096):
-            for code, p, lic in zip(*(batch.column(c).to_pylist() for c in range(3))):
-                if lic in PERMISSIVE and code and keep_code(code, p or ""):
-                    sink.add(code, p or "file.js")
-        path.unlink()
-        sink.finish_shard(key)
 
 
 def fetch_prose(a, sink):
@@ -276,22 +248,21 @@ def fetch_prose(a, sink):
         t = row["text"].strip()
         if len(t) >= 300:
             sink.add(t)
-    sink.finish_shard("fineweb-edu")
+    sink.mark_done("fineweb-edu")
 
 
-SOURCES = {"html": fetch_html, "md": fetch_md, "js": fetch_js, "prose": fetch_prose}
+SOURCES = {"html": fetch_html, "md": fetch_md, "prose": fetch_prose}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("source", choices=list(SOURCES) + ["stack"])
-    ap.add_argument("--out", type=Path, required=True, help="for stack: any file in the output dir")
+    ap.add_argument("source", choices=list(SOURCES) + ["code"])
+    ap.add_argument("--out", type=Path, required=True, help="for code: any file in the output dir")
     ap.add_argument("--max-chars", type=float, default=0)
-    ap.add_argument("--groups", default="", help="stack: name:Lang1,Lang2:chars;name2:...")
-    ap.add_argument("--parquet-shards", type=int, default=12)
+    ap.add_argument("--groups", default="", help="code: name:Lang1,Lang2:chars;name2:...")
     a = ap.parse_args()
-    if a.source == "stack":
-        fetch_stack(a)
-        log("stack: finished")
+    if a.source == "code":
+        fetch_code(a)
+        log("code: finished")
     else:
         sink = Sink(a.out, a.max_chars)
         log(f"{a.source}: target {a.max_chars/1e9:.2f}G chars, already {sink.chars/1e9:.2f}G")

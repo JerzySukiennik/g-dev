@@ -1,6 +1,6 @@
 """Kaggle kernel: build G-Dev's token binaries on CPU (Internet on, no GPU quota).
 
-Five fetchers run in parallel because the bottleneck is network, not CPU. Their
+Four fetchers run in parallel because the bottleneck is network, not CPU. Their
 text lands in /tmp so the saved output holds only dev_train.bin, dev_val.bin,
 tokenizer.json and dev_counts.json. A failed source is skipped rather than
 fatal: a training run on seven of eight sources beats a kernel that dies after
@@ -36,11 +36,10 @@ except Exception:
 JOBS = [
     ("html",   ["html"],  1.8e9),
     ("md",     ["md"],    0.6e9),
-    ("js",     ["js"],    2.2e9),
     ("prose",  ["prose"], 3.2e9),
 ]
-# One process for every raw-Stack language, so they share a single download.
-STACK_GROUPS = "jsx:JavaScript,JSX:1.0e9;css:CSS,SCSS,Less:1.1e9;ts:TypeScript,TSX:2.2e9;py:Python:2.2e9;misc:SVG,Vue,Svelte:0.4e9"
+# One process over github-code-clean feeds one file per language group.
+CODE_GROUPS = "js:JavaScript:3.2e9;ts:TypeScript:2.2e9;css:CSS:1.1e9;py:Python:2.2e9"
 
 procs = {}
 for name, args, chars in JOBS:
@@ -48,10 +47,10 @@ for name, args, chars in JOBS:
     log = open(f"{TMP}/{name}.log", "w")
     procs[name] = (subprocess.Popen([sys.executable, "data/fetch_corpus.py", *args, "--out", out,
                                      "--max-chars", str(chars)], stdout=log, stderr=subprocess.STDOUT), [out])
-log = open(f"{TMP}/stack.log", "w")
-procs["stack"] = (subprocess.Popen([sys.executable, "data/fetch_corpus.py", "stack", "--out", f"{TMP}/stack",
-                                    "--groups", STACK_GROUPS], stdout=log, stderr=subprocess.STDOUT),
-                  [f"{TMP}/corpus_{g.split(':')[0]}.txt" for g in STACK_GROUPS.split(";")])
+log = open(f"{TMP}/code.log", "w")
+procs["code"] = (subprocess.Popen([sys.executable, "data/fetch_corpus.py", "code", "--out", f"{TMP}/code",
+                                   "--groups", CODE_GROUPS], stdout=log, stderr=subprocess.STDOUT),
+                 [f"{TMP}/corpus_{g.split(':')[0]}.txt" for g in CODE_GROUPS.split(";")])
 
 corpora = []
 for name, (p, outs) in procs.items():
