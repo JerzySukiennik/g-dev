@@ -26,6 +26,7 @@ Bez argumentu i bez zadnej sesji startuje gdev-s1.
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -36,7 +37,7 @@ from pathlib import Path
 REPO = Path.home() / "Downloads/Claude/Projects/AIe/G-Dev"
 KAGGLE = [str(Path.home() / "Downloads/Claude/Projects/AIe/G-Images/.venv/bin/python"),
           "-m", "kaggle"]
-USER = "jerzysukiennik"
+USER = "jerzysukiennik"             # konto treningowe; token z ~/.kaggle/access_token
 PREFIX = "gdev-s"
 PREP = "gdev-prep"
 STOP_FILE = REPO / "tools/STOP"
