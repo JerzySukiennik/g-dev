@@ -1,5 +1,5 @@
 """
-Pretraining loop for G-Micro.
+Pretraining loop for G-Dev (inherited from G-Mini, trained from scratch).
 
 Designed around one hard constraint: free Kaggle/Colab sessions die after a few
 hours, without warning. So every piece of state that the run depends on —
@@ -8,8 +8,8 @@ restored together. A resumed run must be indistinguishable from an
 uninterrupted one, otherwise "train once" quietly becomes "train badly".
 
 Run:
-    python train/train.py --data data/pl --out checkpoints/run1
-    python train/train.py --data data/pl --out checkpoints/run1 --resume
+    python train/train.py --data data/dev --out checkpoints/run1
+    python train/train.py --data data/dev --out checkpoints/run1 --resume
 """
 
 import argparse
@@ -180,17 +180,12 @@ def evaluate(model, data, batch_size, iters, ctx):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", type=str, default="data/pl", help="prefix: <data>_train.bin")
+    ap.add_argument("--data", type=str, default="data/dev", help="prefix: <data>_train.bin")
     ap.add_argument("--out", type=Path, default=Path("checkpoints/run1"))
     ap.add_argument("--resume", action="store_true")
-    ap.add_argument("--warm-start", type=str, default=None,
-                    help="checkpoint z model/warm_start.py — startuje z bloków G-Micro "
-                         "zamiast z losowych wag (ignorowane przy --resume)")
-
-    ap.add_argument("--batch-size", type=int, default=4)      # zmierzone: przy 8 brak pamięci
-                                                             # (logity 8x1024x48000 nie mieszczą się)
-    ap.add_argument("--grad-accum", type=int, default=16)     # 4*16*1024 = 65 536 tokenów/krok
-    ap.add_argument("--max-steps", type=int, default=54932)   # 3.6B tokenów / 65 536
+    ap.add_argument("--batch-size", type=int, default=4)      # measured on a T4 at 2048 context: 8 is OOM
+    ap.add_argument("--grad-accum", type=int, default=8)      # 4*8*2048 = 65,536 tokens per step
+    ap.add_argument("--max-steps", type=int, default=55800)   # 3.657B train tokens / 65,536
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--lr", type=float, default=6e-4)
     ap.add_argument("--min-lr", type=float, default=6e-5)
@@ -250,31 +245,6 @@ def main():
     if args.resume and ckpt_path.exists():
         step, best_val = load_ckpt(ckpt_path, model, opt, device)
         print(f"resumed from step {step} (best val {best_val:.4f})")
-    elif args.warm_start:
-        # Start from G-Micro's finished blocks rather than from noise. Weights
-        # only — no optimiser state, no step count: this is step 0 of a new
-        # model, not the continuation of an old run. Built by
-        # model/warm_start.py, which also transplants the embedding table
-        # across the two different tokenizers.
-        wpath = Path(args.warm_start)
-        if not wpath.exists():
-            raise SystemExit(f"brak checkpointu ciepłego startu: {wpath} "
-                             "(uruchom model/warm_start.py)")
-        wck = torch.load(wpath, map_location=device, weights_only=False)
-        core = model.module if hasattr(model, "module") else model
-        core.load_state_dict(wck["model"])
-        stats = wck.get("warm_start_stats", {})
-        print(f"warm start z {wck.get('warm_start_from', '?')}: "
-              f"{stats.get('copied', '?')} osadzeń skopiowanych, "
-              f"{stats.get('averaged', '?')} uśrednionych, "
-              f"{stats.get('random', '?')} losowych")
-        if args.lr > 4e-4:
-            # Transplanted weights are already in a good basin; the from-scratch
-            # peak LR is enough to knock them out of it. Warned rather than
-            # silently overridden — a surprise LR is worse than a loud one.
-            print(f"UWAGA: lr={args.lr} to wartość dla treningu od zera. "
-                  f"Przy ciepłym starcie zalecane ~3e-4, inaczej ryzykujesz "
-                  f"rozbicie przeniesionych wag.")
 
     if args.compile:
         model = torch.compile(model)

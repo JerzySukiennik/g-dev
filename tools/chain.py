@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Odpala kolejne sesje treningu G-Mini bez udzialu czlowieka.
+"""Odpala kolejne sesje treningu G-Dev bez udzialu czlowieka.
 
 Dlaczego Python, skoro to samo robil wczesniej skrypt basha: LaunchAgent NIE
 MOZE czytac ~/Downloads bashem. Zmierzone, nie zalozone — usluga probna dala:
@@ -19,9 +19,10 @@ CANCEL_ACKNOWLEDGED, a takiego Kaggle NIE przyjmuje jako zrodla dla nastepnego
 kernela — sprawdzone dwa razy. Tylko run COMPLETE mozna podpiac, i na tym stoi
 caly ten skrypt.
 
-Uruchomienie: przez LaunchAgent fun.gzowo.g-mini.chain, albo recznie:
-    .venv/bin/python tools/chain.py [g-mini-sN]
+Uruchomienie: przez LaunchAgent fun.gzowo.g-dev.chain, albo recznie:
+    .venv/bin/python tools/chain.py [gdev-sN]
 Zatrzymanie: dotknij pliku tools/STOP.
+Bez argumentu i bez zadnej sesji startuje gdev-s1.
 """
 
 import json
@@ -32,10 +33,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-REPO = Path.home() / "Downloads/Claude/Projects/AIe/G-Mini"
+REPO = Path.home() / "Downloads/Claude/Projects/AIe/G-Dev"
 KAGGLE = [str(Path.home() / "Downloads/Claude/Projects/AIe/G-Images/.venv/bin/python"),
           "-m", "kaggle"]
-USER = "jerzysukienik"
+USER = "jerzysukiennik"
+PREFIX = "gdev-s"
+PREP = "gdev-prep"
 STOP_FILE = REPO / "tools/STOP"
 
 POLL_SECONDS = 900          # sesja trwa ~10 h, czesciej nie ma sensu
@@ -71,33 +74,49 @@ def remaining_hours():
     return float(m.group(1)) if m else None
 
 
-def session_hours():
+def other_gpu_running(own):
+    """Ile innych kerneli GPU konta chodzi teraz. Quota to czas zegarowy i liczy
+    sie za kazdy kernel osobno, wiec dwa rownolegle zjadaja ja dwa razy szybciej."""
+    out = kaggle("kernels", "list", "--mine", "--sort-by", "dateRun", "--page-size", "6")
+    n = 0
+    for line in out.splitlines()[2:]:
+        ref = line.split()[0] if line.split() else ""
+        name = ref.split("/")[-1]
+        if not name or name in (own, PREP) or name.startswith("gdev-s") or "prep" in name:
+            continue
+        if "RUNNING" in " ".join(status_of(name)):
+            n += 1
+    return n
+
+
+def session_hours(own="", slots=1):
     """Ile ma trwac nastepna sesja.
 
     Run sciety przez WYCZERPANA QUOTE konczy sie tak samo jak sciety przez
     platforme — jako CANCELLED — czyli jego checkpoint jest nie do wznowienia.
-    Dlatego sesja nigdy nie jest dluzsza niz to, co realnie zostalo.
+    Dlatego sesja nigdy nie jest dluzsza niz to, co realnie zostalo,
+    a gdy obok chodzi inny kernel GPU (G-Weird), quota dzieli sie przez `slots`.
     """
     rem = remaining_hours()
     if rem is None:
         log("nie umiem odczytac quoty — biore ostrozne 8 h")
         return 8.0
-    h = min(rem - SETUP_MARGIN, SESSION_CAP)
+    h = min((rem - SETUP_MARGIN) / slots, SESSION_CAP)
     return 0.0 if h < MIN_USEFUL else round(h, 1)
 
 
 def detect_current():
     """Ostatnia istniejaca sesja. Usluga wstaje po restarcie bez pamieci."""
     found = None
-    for i in range(2, MAX_SESSION + 1):
-        if "KernelWorkerStatus" in " ".join(status_of(f"g-mini-s{i}")):
-            found = f"g-mini-s{i}"
+    for i in range(1, MAX_SESSION + 1):
+        if "KernelWorkerStatus" in " ".join(status_of(f"{PREFIX}{i}")):
+            found = f"{PREFIX}{i}"
     return found
 
 
 def launch_next(prev, nxt):
-    """0 = odpalone, 1 = blad wymagajacy czlowieka, 2 = brak quoty."""
-    hours = session_hours()
+    """0 = odpalone, 1 = blad wymagajacy czlowieka, 2 = brak quoty, 3 = brak wolnego slotu GPU."""
+    hours = session_hours(nxt, 1 + other_gpu_running(nxt))
     if hours == 0.0:
         log(f"quota prawie wyczerpana — czekam, nie odpalam {nxt}")
         return 2
@@ -107,6 +126,8 @@ def launch_next(prev, nxt):
     code = (REPO / "kaggle/02-train.py").read_text(encoding="utf-8")
     code = re.sub(r"^SESSION_HOURS = .*$", f"SESSION_HOURS = {hours}",
                   code, count=1, flags=re.M)
+    code = re.sub(r"^EXPECT_RESUME = .*$", f"EXPECT_RESUME = {prev is not None}",
+                  code, count=1, flags=re.M)
     (d / "train_kernel.py").write_text(code, encoding="utf-8")
     (d / "kernel-metadata.json").write_text(json.dumps({
         "id": f"{USER}/{nxt}", "title": nxt, "code_file": "train_kernel.py",
@@ -114,7 +135,7 @@ def launch_next(prev, nxt):
         "enable_gpu": "true", "enable_internet": "true",
         "machine_shape": "NvidiaTeslaT4",
         "dataset_sources": [], "competition_sources": [],
-        "kernel_sources": [f"{USER}/g-mini-prep", f"{USER}/{prev}"],
+        "kernel_sources": [f"{USER}/{PREP}"] + ([f"{USER}/{prev}"] if prev else []),
         "model_sources": [],
     }, indent=2), encoding="utf-8")
 
@@ -124,6 +145,8 @@ def launch_next(prev, nxt):
 
     # Kaggle potrafi ODRZUCIC zrodlo i mimo to wystartowac run — wtedy trening
     # leci od zera i cicho marnuje quote. To trzeba zlapac tutaj.
+    if "Maximum batch GPU session count" in out:
+        return 3
     if "not valid kernel sources" in out:
         log(f"STOP: Kaggle odrzucil {prev} jako zrodlo — {nxt} trenowalby od zera.")
         return 1
@@ -135,8 +158,20 @@ def main():
     if not current:
         current = detect_current()
     if not current:
-        log("nie znalazlem zadnej sesji g-mini-sN — podaj nazwe recznie")
-        return 0
+        log("zadnej sesji nie ma — startuje pierwsza")
+        while True:
+            if STOP_FILE.exists():
+                return 0
+            rc = launch_next(None, f"{PREFIX}1")
+            if rc == 0:
+                current = f"{PREFIX}1"
+                break
+            if rc == 1:
+                STOP_FILE.touch()
+                log("wymagana decyzja czlowieka — zapisalem STOP")
+                return 0
+            time.sleep(600 if rc == 3 else QUOTA_WAIT)
+        time.sleep(120)
     n = int(re.sub(r"\D", "", current))
     log(f"lancuch wystartowal, obserwuje {current}")
 
@@ -151,7 +186,7 @@ def main():
             if n >= MAX_SESSION:
                 log(f"osiagnieto MAX_SESSION={MAX_SESSION} — koncze")
                 return 0
-            nxt = f"g-mini-s{n + 1}"
+            nxt = f"{PREFIX}{n + 1}"
             rc = launch_next(current, nxt)
             if rc == 0:
                 current, n = nxt, n + 1
@@ -159,6 +194,8 @@ def main():
                 time.sleep(120)
             elif rc == 2:
                 time.sleep(QUOTA_WAIT)
+            elif rc == 3:
+                time.sleep(600)
             else:
                 # Zero, nie blad: KeepAlive restartuje tylko po niezerowym
                 # wyjsciu, wiec blad wymagajacy czlowieka konczymy czysto,
