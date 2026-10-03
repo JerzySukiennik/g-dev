@@ -1,26 +1,17 @@
-"""Confirm G-Mini's throughput before two weeks of quota depend on it.
+"""Choose G-Dev's size by measuring throughput on the real T4, at both context lengths.
 
-The sizing question this file was originally written for is settled: the T4's
-memory wall sits between 204M and 282M, and G-Mini is 20x768 = 178M so it
-trains at micro-batch 8. What is *not* settled is the throughput of that exact
-shape. It has only ever been interpolated between two measured points —
-16x768 at 12,948 tok/s and 18x896 at 8,946 — and the whole 60-hour budget
-rests on the 10,070 that falls out of the middle.
+G-Mini found the T4's memory wall between 204M and 282M parameters at a 1024
+context. G-Dev wants 2048 (agent traces and whole HTML files are long), and
+attention memory grows with context, so the wall moves. Interpolating this
+hardware has been wrong by ~2x twice, so this measures instead: each candidate
+shape at each context, backing off the micro-batch until it fits.
 
-Interpolating throughput across this hardware has already been wrong twice in
-this project, both times by roughly 2x. Memory decides the micro-batch and the
-micro-batch decides throughput, and neither of those interpolates smoothly.
-Five minutes of quota replaces the guess with a number.
+G-Micro 110M runs as an anchor. At 1024 it must come back near 16,800 tok/s;
+if it does not, distrust every other line.
 
-G-Micro runs alongside as an anchor, **at its own 32k vocabulary** rather than
-G-Mini's 48k: the point of an anchor is to reproduce a known result, and a
-110M model with a 48k softmax is not the model that measured ~16,800 tok/s.
-If the anchor comes back far off that figure, the machine or the measurement
-is wrong and neither number should be believed.
+Run on Kaggle with a T4 x2 accelerator (kaggle/00-probe.py runs both contexts):
 
-Run on Kaggle with a T4 x2 accelerator.
-
-    python bench/size_probe.py
+    PROBE_BLOCK=2048 python bench/size_probe.py
 """
 
 import sys
@@ -37,8 +28,12 @@ from model.gpt import GPT, GPTConfig  # noqa: E402
 # measuring G-Micro with G-Mini's vocabulary would compare it against a number it
 # never produced and quietly break the anchor.
 CANDIDATES = [
-    ("G-Micro 110M (kotwica)", 12, 12, 768, 32000),
-    ("G-Mini 178M (docelowy)", 20, 12, 768, 48000),
+    ("G-Micro 110M (anchor)", 12, 12, 768, 32000),
+    ("16x768", 16, 12, 768, 32768),
+    ("20x768", 20, 12, 768, 32768),
+    ("24x768", 24, 12, 768, 32768),
+    ("18x896", 18, 14, 896, 32768),
+    ("20x896", 20, 14, 896, 32768),
 ]
 BLOCK = int(__import__("os").environ.get("PROBE_BLOCK", 1024))
 STEPS = 3          # optimiser steps timed (each is ACCUM micro-batches)
@@ -120,15 +115,15 @@ def main():
         for micro_batch in (8, 4, 2, 1):
             try:
                 n, tps, peak, accum = try_config(label, L, H, E, V, micro_batch)
-                print(f"{label:<26} {n/1e6:>6.0f}M  micro_batch={micro_batch}x{accum}  "
+                print(f"{label:<22} {n/1e6:>6.0f}M  micro_batch={micro_batch}x{accum}  "
                       f"{tps:>8,.0f} tok/s  peak {peak:>5.1f} GB")
                 results.append((label, n, tps, micro_batch, peak))
                 break
             except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
-                print(f"{label:<26} micro_batch={micro_batch}: OOM, zmniejszam")
+                print(f"{label:<22} micro_batch={micro_batch}: OOM, zmniejszam")
         else:
-            print(f"{label:<26} nie mieści się nawet przy micro_batch=1")
+            print(f"{label:<22} nie mieści się nawet przy micro_batch=1")
 
     # Single-GPU numbers above; training runs DataParallel across both cards,
     # which measured ~1.7x on G-Micro rather than 2x.
@@ -139,7 +134,7 @@ def main():
         for tok_per_param in (8, 20):
             d = tok_per_param * n
             hours = d / (tps * DP) / 3600
-            print(f"{label:<26}{tok_per_param:>10}{d/1e9:>9.1f}B{hours:>8.0f}h{hours/30:>14.1f}")
+            print(f"{label:<22}{tok_per_param:>10}{d/1e9:>9.1f}B{hours:>8.0f}h{hours/30:>14.1f}")
 
 
 if __name__ == "__main__":
