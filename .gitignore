@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pt
+*.bin
+checkpoints/
+Niepotrzebne/
+.venv/
+node_modules/
+synth/out/
+.DS_Store
