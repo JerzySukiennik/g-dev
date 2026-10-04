@@ -22,7 +22,7 @@ caly ten skrypt.
 Uruchomienie: przez LaunchAgent fun.gzowo.g-dev.chain, albo recznie:
     .venv/bin/python tools/chain.py [gdev-sN]
 Zatrzymanie: dotknij pliku tools/STOP.
-Bez argumentu i bez zadnej sesji startuje gdev-s1.
+Bez argumentu i bez zadnej sesji startuje gdev-s2 z datasetu gdev-ckpt (checkpoint sesji 1).
 """
 
 import json
@@ -37,9 +37,13 @@ from pathlib import Path
 REPO = Path.home() / "Downloads/Claude/Projects/AIe/G-Dev"
 KAGGLE = [str(Path.home() / "Downloads/Claude/Projects/AIe/G-Images/.venv/bin/python"),
           "-m", "kaggle"]
-USER = "jerzysukiennik"             # konto treningowe; token z ~/.kaggle/access_token
+CFG = Path.home() / ".kaggle-gdev"          # token konta treningowego G-Dev, osobno od ~/.kaggle
+USER = (CFG / "username").read_text().strip()
+KAGGLE_ENV = {**os.environ, "KAGGLE_API_TOKEN": str(CFG / "access_token")}
 PREFIX = "gdev-s"
 PREP = "gdev-prep"
+SEED = "gdev-ckpt"           # dataset z checkpointem sesji 1 (zrobionej na innym koncie)
+FIRST = 2                    # pierwsza sesja tego konta wznawia sesje 1, wiec numeracja idzie dalej
 STOP_FILE = REPO / "tools/STOP"
 
 POLL_SECONDS = 900          # sesja trwa ~10 h, czesciej nie ma sensu
@@ -58,7 +62,7 @@ def kaggle(*args, timeout=300):
     """Kaggle CLI pisze czesc komunikatow na stderr, wiec laczymy strumienie."""
     try:
         r = subprocess.run(KAGGLE + list(args), capture_output=True, text=True,
-                           timeout=timeout)
+                           timeout=timeout, env=KAGGLE_ENV)
         return (r.stdout or "") + (r.stderr or "")
     except subprocess.TimeoutExpired:
         return "TIMEOUT"
@@ -127,7 +131,7 @@ def launch_next(prev, nxt):
     code = (REPO / "kaggle/02-train.py").read_text(encoding="utf-8")
     code = re.sub(r"^SESSION_HOURS = .*$", f"SESSION_HOURS = {hours}",
                   code, count=1, flags=re.M)
-    code = re.sub(r"^EXPECT_RESUME = .*$", f"EXPECT_RESUME = {prev is not None}",
+    code = re.sub(r"^EXPECT_RESUME = .*$", "EXPECT_RESUME = True",
                   code, count=1, flags=re.M)
     (d / "train_kernel.py").write_text(code, encoding="utf-8")
     (d / "kernel-metadata.json").write_text(json.dumps({
@@ -135,7 +139,7 @@ def launch_next(prev, nxt):
         "language": "python", "kernel_type": "script", "is_private": "true",
         "enable_gpu": "true", "enable_internet": "true",
         "machine_shape": "NvidiaTeslaT4",
-        "dataset_sources": [], "competition_sources": [],
+        "dataset_sources": [] if prev else [f"{USER}/{SEED}"], "competition_sources": [],
         "kernel_sources": [f"{USER}/{PREP}"] + ([f"{USER}/{prev}"] if prev else []),
         "model_sources": [],
     }, indent=2), encoding="utf-8")
@@ -159,13 +163,13 @@ def main():
     if not current:
         current = detect_current()
     if not current:
-        log("zadnej sesji nie ma — startuje pierwsza")
+        log("zadnej sesji nie ma — startuje pierwsza (z checkpointu SEED)")
         while True:
             if STOP_FILE.exists():
                 return 0
-            rc = launch_next(None, f"{PREFIX}1")
+            rc = launch_next(None, f"{PREFIX}{FIRST}")
             if rc == 0:
-                current = f"{PREFIX}1"
+                current = f"{PREFIX}{FIRST}"
                 break
             if rc == 1:
                 STOP_FILE.touch()
