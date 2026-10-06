@@ -50,6 +50,7 @@ POLL_SECONDS = 900          # sesja trwa ~10 h, czesciej nie ma sensu
 QUOTA_WAIT = 3600           # gdy brak quoty — sprawdzaj raz na godzine
 MAX_SESSION = 12
 SESSION_CAP = 10.5          # gorny limit sesji Kaggle
+GPU_FACTOR = 2             # T4 x2: quota liczy kazda karte osobno (zmierzone: sesja 10,5 h = 21,03 h quoty)
 SETUP_MARGIN = 0.7          # klonowanie repo, montowanie, zapis 2 GB
 MIN_USEFUL = 1.5            # ponizej tego nie warto zaczynac
 
@@ -106,7 +107,7 @@ def session_hours(own="", slots=1):
     if rem is None:
         log("nie umiem odczytac quoty — biore ostrozne 8 h")
         return 8.0
-    h = min((rem - SETUP_MARGIN) / slots, SESSION_CAP)
+    h = min((rem - SETUP_MARGIN) / (slots * GPU_FACTOR), SESSION_CAP)
     return 0.0 if h < MIN_USEFUL else round(h, 1)
 
 
