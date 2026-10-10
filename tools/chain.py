@@ -16,6 +16,9 @@ dlugosc sesji jest dobierana tak, by trening sam sie zakonczyl (--max-hours) prz
 limitem quoty. Quote liczy sie ze wspolczynnikiem zmierzonym z poprzednich sesji
 (start 2.0 = ostroznie), bo raz obserwowalismy 2x, raz 1x.
 
+Kazde oczekiwanie jest ograniczone do 30 min: time.sleep nie liczy czasu uspienia Maca,
+wiec dlugi sen potrafil przespac odnowienie quoty o pol dnia.
+
 Uruchomienie: LaunchAgent fun.gzowo.g-dev.chain albo .venv/bin/python tools/chain.py
 Zatrzymanie: dotknij tools/STOP.
 """
@@ -209,7 +212,7 @@ def sft_phase(last_ok, st):
             if q and q[1] < 1.0:
                 wait = max(600, (q[2] - datetime.now(timezone.utc)).total_seconds() + 600)
                 log(f"za malo quoty na SFT, czekam {wait/3600:.1f} h do odnowienia")
-                time.sleep(min(wait, 6 * 3600))
+                time.sleep(min(wait, 1800))
                 continue
             rc = push_kernel(SFT, "kaggle/03-sft.py", [f"{USER}/{PREP}", f"{USER}/{last_ok}"], [], {})
             if rc == 0:
@@ -269,7 +272,7 @@ def main():
             notify(f"{fails} bledy startu z rzedu, ponawiam po odnowieniu quoty (za {wait/3600:.1f} h)")
             ignore = st["ignore"] = st["top"]
             save_state(st)
-            time.sleep(min(wait, 7 * 24 * 3600))
+            time.sleep(min(wait, 1800))
             continue
         if fails:
             ln = st.get("launch", {})
@@ -285,7 +288,7 @@ def main():
             q = quota()
             wait = QUOTA_WAIT
             if q and q[1] < MIN_USEFUL + SETUP_MARGIN:
-                wait = min(max(900, (q[2] - datetime.now(timezone.utc)).total_seconds() + 600), 6 * 3600)
+                wait = min(max(900, (q[2] - datetime.now(timezone.utc)).total_seconds() + 600), 1800)
             time.sleep(wait)
         elif rc == 3:
             time.sleep(600)

@@ -1,6 +1,16 @@
 {
- "factor": 2.0,
+ "factor": 1.0,
  "steps": {
-  "gdev-s4": 15490
+  "gdev-s4": 15490,
+  "gdev-s6": 16970,
+  "gdev-s7": 18260
+ },
+ "top": 7,
+ "launch": {
+  "name": "gdev-s8",
+  "hours": 10.5,
+  "used": 0.0,
+  "ts": 1791620760.108247,
+  "measured": false
  }
 }
