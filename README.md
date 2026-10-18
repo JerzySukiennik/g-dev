@@ -25,6 +25,13 @@ tool-call format, not one that fixes real repositories alone.
 4. Eval: generated pages opened in a headless browser (no console errors, non-blank
    render), MultiPL-E JS pass@1, and execution of generated tool calls.
 
+## Panel
+
+`app/` is a local panel in the style of a coding agent: describe a page, the model streams
+the file as it writes it, the panel saves it to `app/pages/`, opens a live preview and reports
+console errors. Inference runs on the CPU at low priority. Start it with `python app/server.py`
+or the `G-Dev.app` launcher built from `app/launcher.applescript`.
+
 ## Layout
 
 | path | what |

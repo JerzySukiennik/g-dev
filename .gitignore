@@ -8,3 +8,4 @@ Niepotrzebne/
 node_modules/
 synth/out/
 .DS_Store
+app/pages/

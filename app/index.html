@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>G-Dev</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --sunk: #f0f0ed; --line: #e3e3de; --fg: #1d1d1b; --mut: #76766f;
+  --acc: #3b5bdb; --acc-soft: #e7ecfc; --err: #d63a2f; --warn: #b7791f;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace; --sans: system-ui, -apple-system, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141413; --panel: #1b1b1a; --sunk: #222220; --line: #2e2e2b; --fg: #ececea; --mut: #8e8e87;
+    --acc: #7d95f5; --acc-soft: #232a45; --err: #f0675c; --warn: #e0a84a;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--sans); }
+.app { height: 100vh; display: grid; grid-template-rows: auto 1fr; }
+header { display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-bottom: 1px solid var(--line); }
+header h1 { font-size: 15px; margin: 0; letter-spacing: 0.2px; }
+.meta { color: var(--mut); font: 12px var(--mono); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mut); margin-left: auto; transition: background .3s; }
+.dot.ready { background: var(--acc); }
+.dot.busy { background: var(--acc); animation: blink 1s ease-in-out infinite; }
+@keyframes blink { 50% { opacity: .25; } }
+.state { color: var(--mut); font-size: 12px; }
+main { display: grid; grid-template-columns: minmax(0, 46fr) minmax(0, 54fr); min-height: 0; }
+.chat { display: grid; grid-template-rows: 1fr auto; min-height: 0; border-right: 1px solid var(--line); }
+.log { overflow-y: auto; padding: 20px 20px 8px; }
+.empty { color: var(--mut); max-width: 460px; margin: 10vh auto 0; }
+.empty h2 { color: var(--fg); font-size: 18px; margin: 0 0 6px; }
+.empty p { margin: 0 0 16px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 999px; padding: 6px 12px; font: 13px var(--sans); cursor: pointer; text-align: left; transition: border-color .15s, transform .15s; }
+.chip:hover { border-color: var(--acc); transform: translateY(-1px); }
+.turn { margin-bottom: 22px; animation: rise .25s ease-out; }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+.ask { background: var(--sunk); border-radius: 10px; padding: 10px 14px; white-space: pre-wrap; }
+.ask::before { content: "> "; color: var(--mut); font-family: var(--mono); }
+.steps { margin: 12px 0 0 4px; }
+.step { position: relative; padding: 0 0 12px 22px; font: 13px/1.5 var(--mono); }
+.step::before { content: ""; position: absolute; left: 3px; top: 6px; width: 8px; height: 8px; border-radius: 50%; background: var(--mut); }
+.step.run::before { background: var(--acc); animation: blink 1s ease-in-out infinite; }
+.step.ok::before { background: var(--acc); }
+.step.bad::before { background: var(--err); }
+.step.warn::before { background: var(--warn); }
+.step .t b { font-weight: 600; }
+.step .sub { color: var(--mut); }
+.step .sub.err { color: var(--err); }
+.step .sub.warnt { color: var(--warn); }
+.code { margin-top: 6px; max-height: 220px; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 12px/1.45 var(--mono); white-space: pre; color: var(--fg); }
+.code.closed { display: none; }
+.toggle { background: none; border: 0; color: var(--mut); font: 12px var(--mono); cursor: pointer; padding: 0; margin-left: 6px; }
+.toggle:hover { color: var(--fg); }
+.composer { padding: 12px 16px 16px; border-top: 1px solid var(--line); }
+.box { display: flex; gap: 8px; align-items: flex-end; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px 8px 8px 12px; transition: border-color .15s; }
+.box:focus-within { border-color: var(--acc); }
+textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; color: var(--fg); font: 14px/1.5 var(--sans); max-height: 160px; min-height: 22px; padding: 4px 0; }
+.send { border: 0; border-radius: 8px; background: var(--acc); color: #fff; font: 600 13px var(--sans); padding: 8px 14px; cursor: pointer; transition: opacity .15s, transform .1s; }
+.send:active { transform: scale(.97); }
+.send:disabled { opacity: .4; cursor: default; }
+.hint { color: var(--mut); font-size: 12px; margin-top: 6px; }
+.side { display: grid; grid-template-rows: auto 1fr; min-height: 0; background: var(--panel); }
+.bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.tab { border: 0; background: none; color: var(--mut); font: 13px var(--sans); padding: 5px 10px; border-radius: 6px; cursor: pointer; }
+.tab.on { background: var(--sunk); color: var(--fg); }
+select { margin-left: auto; max-width: 46%; background: var(--sunk); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; font: 12px var(--mono); padding: 5px 6px; }
+.open { color: var(--mut); font-size: 12px; text-decoration: none; padding: 5px 6px; }
+.open:hover { color: var(--fg); }
+.view { position: relative; min-height: 0; }
+iframe { width: 100%; height: 100%; border: 0; background: #fff; display: block; }
+.src { position: absolute; inset: 0; overflow: auto; margin: 0; padding: 14px 16px; font: 12px/1.5 var(--mono); white-space: pre; background: var(--panel); counter-reset: ln; }
+.src span { display: block; }
+.src span::before { counter-increment: ln; content: counter(ln); display: inline-block; width: 3ch; margin-right: 14px; text-align: right; color: var(--mut); }
+.hidden { display: none !important; }
+.blank { position: absolute; inset: 0; display: grid; place-items: center; color: var(--mut); background: var(--panel); }
+@media (max-width: 820px) {
+  main { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+  .chat { border-right: 0; border-bottom: 1px solid var(--line); }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>G-Dev</h1>
+    <span class="meta" id="meta">loading model</span>
+    <span class="dot" id="dot"></span>
+    <span class="state" id="state">starting</span>
+  </header>
+  <main>
+    <section class="chat">
+      <div class="log" id="log">
+        <div class="empty" id="empty">
+          <h2>Describe a page, G-Dev writes it.</h2>
+          <p>A 167M model trained from scratch, running on this Mac. It knows buttons, cards, loaders, progress bars, switches, menus, tabs, modals, FAQs, counters, animated text and gradients, and small canvas games like Snake and Pong.</p>
+          <div class="chips" id="chips"></div>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="box">
+          <textarea id="input" rows="1" placeholder="Make a pink pill button &quot;Play&quot; that glows on hover" autofocus></textarea>
+          <button class="send" id="send">Send</button>
+        </div>
+        <div class="hint">Enter to send, Shift+Enter for a new line. English works best.</div>
+      </div>
+    </section>
+    <section class="side">
+      <div class="bar">
+        <button class="tab on" data-v="preview">Preview</button>
+        <button class="tab" data-v="code">Code</button>
+        <select id="files"></select>
+        <a class="open" id="open" target="_blank" rel="noopener">Open</a>
+      </div>
+      <div class="view">
+        <iframe id="frame" sandbox="allow-scripts"></iframe>
+        <pre class="src hidden" id="src"></pre>
+        <div class="blank" id="blank">Nothing written yet</div>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+const EXAMPLES = [
+  'Make a green pill button "Play" that glows on hover.',
+  'Create a card titled "Rocket launch" saying "Liftoff is scheduled for Saturday morning." that tilts slightly on hover, dark theme.',
+  'Build a loader with three pulsing dots in purple, fast.',
+  'Make a Snake game with an orange snake and green food, controlled with the arrow keys, showing the score above the board.',
+  'Create a Pong game where I move the blue paddle on the left with the arrow keys, the computer plays the red paddle, and the score counts my hits.',
+  'Make a toggle switch labeled "Wi-Fi" that turns teal when it is on.',
+];
+const $ = (id) => document.getElementById(id);
+const log = $("log"), input = $("input"), send = $("send"), frame = $("frame"), src = $("src"), blank = $("blank");
+let busy = false, controller = null, view = "preview", current = null, previewToken = 0, errors = [];
+
+for (const ex of EXAMPLES) {
+  const b = document.createElement("button");
+  b.className = "chip"; b.textContent = ex;
+  b.onclick = () => { input.value = ex; autosize(); input.focus(); };
+  $("chips").appendChild(b);
+}
+
+const REPORTER = `<script>(function(){var s=function(m){parent.postMessage({gdev:TOKEN,error:String(m)},"*")};window.addEventListener("error",function(e){s(e.message)});window.addEventListener("unhandledrejection",function(e){s(e.reason)});var ce=console.error;console.error=function(){s([].slice.call(arguments).join(" "));ce.apply(console,arguments)}})()<\/script>`;
+
+function withReporter(html, token) {
+  const tag = REPORTER.replace("TOKEN", token);
+  return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + tag) : tag + html;
+}
+
+window.addEventListener("message", (e) => {
+  if (e.data && e.data.gdev === previewToken) errors.push(e.data.error);
+});
+
+function show(html) {
+  previewToken++;
+  errors = [];
+  blank.classList.add("hidden");
+  frame.srcdoc = withReporter(html, previewToken);
+  src.innerHTML = "";
+  for (const line of html.split("\n")) {
+    const s = document.createElement("span");
+    s.textContent = line || " ";
+    src.appendChild(s);
+  }
+}
+
+function setView(v) {
+  view = v;
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t.dataset.v === v));
+  frame.classList.toggle("hidden", v !== "preview");
+  src.classList.toggle("hidden", v !== "code");
+}
+document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => setView(t.dataset.v)));
+
+async function loadFiles(select) {
+  const files = await (await fetch("/api/files")).json();
+  const sel = $("files");
+  sel.innerHTML = "";
+  for (const f of files) {
+    const o = document.createElement("option");
+    o.value = f.name; o.textContent = f.name; o.title = f.prompt;
+    sel.appendChild(o);
+  }
+  if (select) sel.value = select;
+  sel.classList.toggle("hidden", !files.length);
+  $("open").classList.toggle("hidden", !files.length);
+  if (sel.value) $("open").href = "/pages/" + sel.value;
+}
+$("files").onchange = async (e) => {
+  const name = e.target.value;
+  $("open").href = "/pages/" + name;
+  show(await (await fetch("/pages/" + name)).text());
+};
+
+function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 160) + "px"; }
+input.addEventListener("input", autosize);
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); busy ? null : go(); }
+});
+send.onclick = () => (busy ? controller && controller.abort() : go());
+
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function step(parent, title, cls = "run") {
+  const s = el("div", "step " + cls);
+  const t = el("div", "t");
+  t.innerHTML = title;
+  s.appendChild(t);
+  parent.appendChild(s);
+  log.scrollTop = log.scrollHeight;
+  return s;
+}
+function sub(s, text, cls = "") { const d = el("div", "sub " + cls, text); s.appendChild(d); log.scrollTop = log.scrollHeight; return d; }
+function esc(s) { return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+function setBusy(b) {
+  busy = b;
+  send.textContent = b ? "Stop" : "Send";
+  $("dot").className = "dot " + (b ? "busy" : "ready");
+  $("state").textContent = b ? "writing" : "ready";
+}
+
+async function go() {
+  const prompt = input.value.trim();
+  if (!prompt) return;
+  input.value = ""; autosize();
+  $("empty")?.remove();
+  const turn = el("div", "turn");
+  turn.appendChild(el("div", "ask", prompt));
+  const steps = el("div", "steps");
+  turn.appendChild(steps);
+  log.appendChild(turn);
+  setBusy(true);
+  controller = new AbortController();
+  let write = null, code = null, text = "", file = "", lastPreview = 0, info = null, t0 = performance.now();
+  const lineCount = () => text.split("\n").length;
+  try {
+    const res = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }), signal: controller.signal });
+    if (res.status === 409) throw new Error("the model is busy with another request");
+    if (!res.ok) throw new Error("server error " + res.status);
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (!line.startsWith("data: ")) continue;
+        const ev = JSON.parse(line.slice(6));
+        if (ev.t === "start") {
+          file = ev.file;
+          write = step(steps, `<b>Write</b>(pages/${esc(file)})`);
+          const meta = sub(write, "writing…");
+          const tg = el("button", "toggle", "hide");
+          meta.appendChild(tg);
+          code = el("pre", "code");
+          write.appendChild(code);
+          tg.onclick = () => { code.classList.toggle("closed"); tg.textContent = code.classList.contains("closed") ? "show" : "hide"; };
+          write._meta = meta.firstChild;
+          setView("preview");
+        } else if (ev.t === "delta") {
+          text += ev.text;
+          const stick = code.scrollTop + code.clientHeight >= code.scrollHeight - 30;
+          code.textContent = text;
+          if (stick) code.scrollTop = code.scrollHeight;
+          write._meta.textContent = `writing… ${lineCount()} lines `;
+          const now = performance.now();
+          if (now - lastPreview > 1500 && /<body[^>]*>[\s\S]*<\//i.test(text)) { show(text); lastPreview = now; }
+          log.scrollTop = log.scrollHeight;
+        } else if (ev.t === "done") {
+          info = ev;
+        }
+      }
+    }
+    if (!info) throw new Error("the stream ended early");
+    write.className = "step ok";
+    write._meta.textContent = `${info.lines} lines, ${info.tokens} tokens in ${info.secs}s (${(info.tokens / info.secs).toFixed(0)} tok/s) `;
+    code.classList.add("closed");
+    write.querySelector(".toggle").textContent = "show";
+    if (!info.complete) sub(write, "stopped at the token limit, the page may be cut off", "warnt");
+    show(text);
+    await loadFiles(file);
+    const pv = step(steps, `<b>Preview</b>(${esc(file)})`, "ok");
+    sub(pv, "opened in the panel on the right");
+    const ck = step(steps, "<b>Check</b>(console)");
+    await new Promise((r) => setTimeout(r, 1500));
+    if (errors.length) {
+      ck.className = "step bad";
+      sub(ck, `${errors.length} error${errors.length > 1 ? "s" : ""}: ${errors[0]}`, "err");
+    } else {
+      ck.className = "step ok";
+      sub(ck, "no errors after 1.5 s");
+    }
+    const html = text.trim();
+    if (!/<\/html>\s*$/i.test(html)) { const w = step(steps, "<b>Check</b>(structure)", "warn"); sub(w, "the document is not closed", "warnt"); }
+  } catch (err) {
+    if (write) write.className = "step bad";
+    const s = step(steps, err.name === "AbortError" ? "<b>Stopped</b>" : "<b>Error</b>", err.name === "AbortError" ? "warn" : "bad");
+    sub(s, err.name === "AbortError" ? `you stopped it after ${((performance.now() - t0) / 1000).toFixed(0)}s` : err.message, err.name === "AbortError" ? "warnt" : "err");
+    if (text) show(text);
+  } finally {
+    setBusy(false);
+    controller = null;
+    input.focus();
+  }
+}
+
+(async () => {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    $("meta").textContent = `${(s.params / 1e6).toFixed(0)}M params · ${s.context} ctx · local CPU, ${s.threads} threads`;
+    setBusy(false);
+    await loadFiles();
+    const sel = $("files");
+    if (sel.value) show(await (await fetch("/pages/" + sel.value)).text());
+  } catch {
+    $("state").textContent = "server offline";
+  }
+})();
+</script>
+</body>
+</html>
