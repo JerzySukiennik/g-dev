@@ -46,7 +46,9 @@ VERSIONS = PAGES / ".versions"
 # Newest fine-tune first; an older one is used while a newer one is still training.
 RUNS = [("sft3-final", "gdev-sft3-weights.pt"), ("sft2-final", "gdev-sft2-weights.pt")]
 for run, weights in RUNS:
-    if (ROOT / "Niepotrzebne" / run / "sft/ckpt.pt").exists() or (ROOT / "Niepotrzebne" / weights).exists():
+    ck = ROOT / "Niepotrzebne" / run / "sft/ckpt.pt"
+    tk = ROOT / "Niepotrzebne" / run / "sft/tokenizer.json"
+    if tk.exists() and ((ROOT / "Niepotrzebne" / weights).exists() or (ck.exists() and ck.stat().st_size > 1e9)):
         break
 SFT_CKPT = ROOT / "Niepotrzebne" / run / "sft/ckpt.pt"
 WEIGHTS = ROOT / "Niepotrzebne" / weights
