@@ -232,7 +232,8 @@ def sft_phase(last_ok, st):
         STOP_FILE.touch()
         return
     gal = REPO / "Niepotrzebne/sft-gallery.html"
-    r = subprocess.run([TORCH_PY, str(REPO / "eval/sft_gallery.py"), str(ckpt), str(tok), "--out", str(gal)],
+    r = subprocess.run(["nice", "-n", "10", TORCH_PY, str(REPO / "eval/sft_gallery.py"), str(ckpt), str(tok),
+                        "--out", str(gal), "--threads", "4"],
                        capture_output=True, text=True)
     log(r.stdout[-400:] + r.stderr[-400:])
     DONE_FILE.write_text(f"checkpoint: {ckpt}\ngallery: {gal}\n")
