@@ -43,6 +43,7 @@ PREFIX, PREP, SEED, SFT = "gdev-s", "gdev-prep", "gdev-ckpt", "gdev-sft"
 FIRST = 2
 MAX_SESSION = 60
 MAX_STEPS = 55800
+DONE_STEPS = MAX_STEPS - 1000     # ostatnie ~2% przy lr ~6e-5 nic nie zmienia, a dobijanie ich moglo czekac tydzien na quote
 STATE = REPO / "tools/state.json"
 STOP_FILE = REPO / "tools/STOP"
 DONE_FILE = REPO / "tools/DONE"
@@ -54,7 +55,7 @@ RETRY_WAIT = 1800
 MAX_FAILS = 4
 SESSION_CAP = 10.5
 SETUP_MARGIN = 0.7
-MIN_USEFUL = 1.5
+MIN_USEFUL = 0.8
 
 
 def log(msg):
@@ -259,7 +260,7 @@ def main():
 
         done = [n for n, s in sess.items() if s == "COMPLETE"]
         last_ok = f"{PREFIX}{max(done)}" if done else None
-        if last_ok and (last_step(last_ok, st) or 0) >= MAX_STEPS:
+        if last_ok and (last_step(last_ok, st) or 0) >= DONE_STEPS:
             sft_phase(last_ok, st)
             return 0
 
