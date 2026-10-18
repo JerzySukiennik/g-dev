@@ -223,8 +223,8 @@ function diffLines(a, b) {
   let i = 0, j = 0;
   while (i < n || j < m) {
     if (i < n && j < m && a[i] === b[j]) { out.push(["same", a[i]]); i++; j++; }
-    else if (j < m && (i >= n || L[i][j + 1] >= L[i + 1][j])) { out.push(["add", b[j]]); j++; }
-    else { out.push(["del", a[i]]); i++; }
+    else if (i < n && (j >= m || L[i + 1][j] >= L[i][j + 1])) { out.push(["del", a[i]]); i++; }
+    else { out.push(["add", b[j]]); j++; }
   }
   return out;
 }

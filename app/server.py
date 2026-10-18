@@ -40,9 +40,9 @@ from model.gpt import GPT, GPTConfig  # noqa: E402
 APP = Path(__file__).resolve().parent
 PAGES = APP / "pages"
 VERSIONS = PAGES / ".versions"
-SFT_CKPT = ROOT / "Niepotrzebne/sft-final/sft/ckpt.pt"
-WEIGHTS = ROOT / "Niepotrzebne/gdev-sft-weights.pt"
-TOKENIZER = ROOT / "Niepotrzebne/sft-final/sft/tokenizer.json"
+SFT_CKPT = ROOT / "Niepotrzebne/sft2-final/sft/ckpt.pt"
+WEIGHTS = ROOT / "Niepotrzebne/gdev-sft2-weights.pt"
+TOKENIZER = ROOT / "Niepotrzebne/sft2-final/sft/tokenizer.json"
 MAX_TOKENS = 1400
 ANSWER_ROOM = 900
 THREADS = 4
