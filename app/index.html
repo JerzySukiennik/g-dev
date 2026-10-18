@@ -108,7 +108,7 @@ iframe { width: 100%; height: 100%; border: 0; background: #fff; display: block;
       <div class="log" id="log">
         <div class="empty" id="empty">
           <h2>Describe a page, G-Dev writes it.</h2>
-          <p>A 167M model trained from scratch, running on this Mac. It knows buttons, cards, loaders, progress bars, switches, menus, tabs, modals, FAQs, counters, animated text and gradients, and small canvas games like Snake and Pong.</p>
+          <p>A 167M model trained from scratch, running on this Mac. It knows buttons, cards, forms, loaders, menus, tabs, modals, sliders, tooltips, to-do lists, clocks, stopwatches, calculators, landing pages, cursor effects, animated text, and games: Snake, Pong, Breakout, Flappy Bird, a lane runner, Tic-tac-toe, Memory and Whack-a-mole. Follow-ups like "make it red" or "use 9 dots" edit the page.</p>
           <div class="chips" id="chips"></div>
         </div>
       </div>
@@ -138,12 +138,14 @@ iframe { width: 100%; height: 100%; border: 0; background: #fff; display: block;
 </div>
 <script>
 const EXAMPLES = [
-  'Make a green pill button "Play" that glows on hover.',
-  'Create a card titled "Rocket launch" saying "Liftoff is scheduled for Saturday morning." that tilts slightly on hover, dark theme.',
-  'Build a loader with three pulsing dots in purple, fast.',
-  'Make a Snake game with an orange snake and green food, controlled with the arrow keys, showing the score above the board.',
-  'Create a Pong game where I move the blue paddle on the left with the arrow keys, the computer plays the red paddle, and the score counts my hits.',
-  'Make a toggle switch labeled "Wi-Fi" that turns teal when it is on.',
+  'Make me a nice register form that will have a green theme',
+  'Make me a loader made of nine purple dots arranged in a circle',
+  'Make a trail of 12 rainbow-colored dots that follows the cursor',
+  'Make me a 2D runner game inspired by Subway Surfers',
+  'Create a landing page for a bakery called "Sunny Bakery" with a navbar, a hero with an orange "Order now" button, three feature cards and a footer',
+  'Build a to-do list app titled "Homework" in teal',
+  'Make a Tic-tac-toe game for two players with blue X and red O',
+  'Create a calculator with a pink theme',
 ];
 const $ = (id) => document.getElementById(id);
 const log = $("log"), input = $("input"), send = $("send"), frame = $("frame"), src = $("src"), blank = $("blank");

@@ -43,9 +43,14 @@ from model.gpt import GPT, GPTConfig  # noqa: E402
 APP = Path(__file__).resolve().parent
 PAGES = APP / "pages"
 VERSIONS = PAGES / ".versions"
-SFT_CKPT = ROOT / "Niepotrzebne/sft2-final/sft/ckpt.pt"
-WEIGHTS = ROOT / "Niepotrzebne/gdev-sft2-weights.pt"
-TOKENIZER = ROOT / "Niepotrzebne/sft2-final/sft/tokenizer.json"
+# Newest fine-tune first; an older one is used while a newer one is still training.
+RUNS = [("sft3-final", "gdev-sft3-weights.pt"), ("sft2-final", "gdev-sft2-weights.pt")]
+for run, weights in RUNS:
+    if (ROOT / "Niepotrzebne" / run / "sft/ckpt.pt").exists() or (ROOT / "Niepotrzebne" / weights).exists():
+        break
+SFT_CKPT = ROOT / "Niepotrzebne" / run / "sft/ckpt.pt"
+WEIGHTS = ROOT / "Niepotrzebne" / weights
+TOKENIZER = ROOT / "Niepotrzebne" / run / "sft/tokenizer.json"
 MAX_TOKENS = 1400
 ANSWER_ROOM = 900
 THREADS = 4
