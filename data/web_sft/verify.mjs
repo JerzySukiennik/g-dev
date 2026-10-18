@@ -3,7 +3,8 @@
 // A page passes when it throws no errors, shows something, and does what its
 // checks say: animates, changes on hover, changes on click, survives key presses.
 // "Changes" means the rendered pixels differ, so a hover rule that does nothing
-// visible fails.
+// visible fails. Checks can also fill inputs first, move the mouse, or wait longer
+// for slow animations such as a clock that ticks once a second.
 //
 // Usage: node verify.mjs pages.jsonl verified.jsonl [shots_dir] [concurrency]
 
@@ -37,8 +38,11 @@ async function check(browser, row) {
     if (!visible) reasons.push("nothing visible");
     const s0 = await page.screenshot();
     let last = s0;
+    if (c.fill) {
+      for (const [sel, text] of c.fill) await page.fill(sel, text, { timeout: 2000 });
+    }
     if (c.animated) {
-      await sleep(350);
+      await sleep(c.animWait || 350);
       const s1 = await page.screenshot();
       if (s0.equals(s1)) reasons.push("not animated");
       last = s1;
@@ -57,6 +61,14 @@ async function check(browser, row) {
       await sleep(c.wait || 200);
       const after = await page.screenshot();
       if (before.equals(after)) reasons.push("click changes nothing");
+      last = after;
+    }
+    if (c.mouse) {
+      const before = await page.screenshot();
+      for (const [x, y] of c.mouse) { await page.mouse.move(x, y, { steps: 6 }); await sleep(60); }
+      await sleep(c.wait || 250);
+      const after = await page.screenshot();
+      if (before.equals(after)) reasons.push("mouse changes nothing");
       last = after;
     }
     if (c.keys) {
