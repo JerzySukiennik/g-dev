@@ -99,7 +99,7 @@ h2{{font-size:15px;color:var(--acc);margin:36px 0 12px}}.item{{margin-bottom:22p
 figure{{margin:0;border:1px solid var(--line);border-radius:12px;overflow:hidden}}iframe{{width:100%;height:300px;border:0;background:#fff;display:block}}
 summary{{cursor:pointer;padding:8px 12px;color:var(--mut);font-size:12px;border-top:1px solid var(--line)}}
 pre{{margin:0;padding:12px;max-height:260px;overflow:auto;font:12px/1.45 ui-monospace,monospace;white-space:pre-wrap}}
-</style></head><body><main><h1>G-Dev after SFT (pretrain step {ck['step']})</h1>
+</style></head><body><main><h1>G-Dev after SFT ({ck['step']} fine-tuning steps)</h1>
 <p class="sub">Each answer is the page the model wrote for the request above it, rendered live and unedited. The first variant is greedy, the second sampled.</p>
 {''.join(parts)}</main></body></html>"""
     Path(a.out).write_text(page, encoding="utf-8")

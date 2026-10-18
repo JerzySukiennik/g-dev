@@ -1,5 +1,5 @@
 {
- "factor": 1.03,
+ "factor": 1.0,
  "steps": {
   "gdev-s4": 15490,
   "gdev-s6": 16970,
@@ -8,14 +8,16 @@
   "gdev-s9": 32530,
   "gdev-s10": 37570,
   "gdev-s11": 44410,
-  "gdev-s12": 51500
+  "gdev-s12": 51500,
+  "gdev-s13": 55800
  },
- "top": 12,
+ "top": 13,
  "launch": {
   "name": "gdev-s13",
   "hours": 8.0,
   "used": 21.03,
   "ts": 1792316648.667315,
-  "measured": false
- }
+  "measured": true
+ },
+ "sft_for": "gdev-s13"
 }
