@@ -15,7 +15,9 @@ it has to write the whole page and then stop with `<|end|>`. Three choices matte
   trade the model's general code knowledge for the 18 patterns it is shown.
 
 Input files are produced by data/web_sft/build.py: one JSON per line with `text`
-and `answer_from`, the character offset where the answer begins.
+and `spans`, the character ranges of every assistant answer (older files carry a
+single `answer_from` offset instead). Two-turn conversations teach editing: the
+second page is the first with one change, and only the pages are scored.
 
 Run:
     python train/finetune.py --init run1/ckpt.pt --tokenizer tokenizer.json \
@@ -50,7 +52,8 @@ def encode_examples(path, tok, block):
         ids = enc.ids
         if len(ids) > block:
             continue
-        mask = [start >= r["answer_from"] for start, _ in enc.offsets]
+        spans = r.get("spans") or [[r["answer_from"], len(r["text"])]]
+        mask = [any(a <= start < b for a, b in spans) for start, _ in enc.offsets]
         out.append((ids, mask))
     return out
 

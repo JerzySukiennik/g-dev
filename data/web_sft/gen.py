@@ -6,8 +6,13 @@ the description, and a description never states something the page does not do,
 so the model learns "say it, get it" instead of guessing. Pages are checked in a
 real browser by verify.mjs before they are kept.
 
+Besides single requests it writes two-turn conversations: an edit ("make it red"),
+where the second page is the first one regenerated with exactly one parameter
+changed, and a switch, where the second request is an unrelated new page. The
+model has to tell the two apart from the conversation alone.
+
 Usage:
-    python data/web_sft/gen.py --n 6500 --out pages.jsonl
+    python data/web_sft/gen.py --out DIR      # writes DIR/pages.jsonl and DIR/convs.jsonl
 """
 
 import argparse
@@ -120,14 +125,32 @@ def pick_color(rng, exclude=()):
     return name, COLORS[name]
 
 
+class Params:
+    """Records every parameter a pattern draws, or replays given values.
+
+    Regenerating a page with all of its recorded parameters and one of them changed
+    gives exactly the edited page, which is what the edit conversations need.
+    """
+
+    def __init__(self, given=None):
+        self.given = dict(given or {})
+        self.vals = {}
+
+    def __call__(self, name, draw):
+        v = self.given[name] if name in self.given else draw()
+        self.vals[name] = v
+        return v
+
+
 # ---------------------------------------------------------------- UI patterns
 
-def button_hover(rng, dark):
-    cname, (hx, hd, tx) = pick_color(rng)
-    shape = rng.choice(["rounded", "pill", "square"])
+def button_hover(rng, dark, P):
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    shape = P("shape", lambda: rng.choice(["rounded", "pill", "square"]))
     radius = {"rounded": "10px", "pill": "999px", "square": "0"}[shape]
-    label = rng.choice(LABELS)
-    effect = rng.choice(["grow", "lift", "glow", "darken", "outline"])
+    label = P("label", lambda: rng.choice(LABELS))
+    effect = P("effect", lambda: rng.choice(["grow", "lift", "glow", "darken", "outline"]))
     hover = {
         "grow": "transform: scale(1.1);",
         "lift": "transform: translateY(-4px);\n  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.25);",
@@ -162,10 +185,11 @@ def button_hover(rng, dark):
     return finish(rng, core, dark), page("Button", css, body, dark), {"hover": ".btn", "wait": 350}
 
 
-def card_hover(rng, dark):
-    cname, (hx, hd, tx) = pick_color(rng)
-    title, text = rng.choice(CARDS)
-    effect = rng.choice(["lift", "tilt", "grow"])
+def card_hover(rng, dark, P):
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    title, text = P("card", lambda: rng.choice(CARDS))
+    effect = P("effect", lambda: rng.choice(["lift", "tilt", "grow"]))
     hover = {"lift": "transform: translateY(-8px);\n  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.25);",
              "tilt": "transform: rotate(-2deg);\n  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.25);",
              "grow": "transform: scale(1.05);\n  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.25);"}[effect]
@@ -197,10 +221,11 @@ def card_hover(rng, dark):
     return finish(rng, core, dark), page("Card", css, body, dark), {"hover": ".card", "wait": 400}
 
 
-def spinner(rng, dark):
-    cname, (hx, hd, tx) = pick_color(rng)
-    kind = rng.choice(["ring", "dots", "bars", "pulse"])
-    speed = rng.choice(["slow", "normal", "normal", "fast"])
+def spinner(rng, dark, P):
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    kind = P("kind", lambda: rng.choice(["ring", "dots", "bars", "pulse"]))
+    speed = P("speed", lambda: rng.choice(["slow", "normal", "normal", "fast"]))
     track = "#374151" if dark else "#d1d5db"
     d = {"ring": {"slow": "1.6s", "normal": "0.9s", "fast": "0.45s"}, "dots": {"slow": "1.8s", "normal": "1s", "fast": "0.5s"},
          "bars": {"slow": "1.6s", "normal": "1s", "fast": "0.5s"}, "pulse": {"slow": "2s", "normal": "1.2s", "fast": "0.6s"}}[kind][speed]
@@ -299,11 +324,12 @@ def spinner(rng, dark):
     return finish(rng, core, dark), page("Loader", css, body, dark), {"animated": True}
 
 
-def progress(rng, dark):
-    cname, (hx, hd, tx) = pick_color(rng)
-    speed = rng.choice(["slow", "normal", "fast"])
+def progress(rng, dark, P):
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    speed = P("speed", lambda: rng.choice(["slow", "normal", "fast"]))
     d = {"slow": "4s", "normal": "2s", "fast": "1s"}[speed]
-    shape = rng.choice(["rounded", "square"])
+    shape = P("shape", lambda: rng.choice(["rounded", "square"]))
     r = "999px" if shape == "rounded" else "0"
     track = "#374151" if dark else "#e5e7eb"
     css = f""".bar {{
@@ -335,9 +361,10 @@ def progress(rng, dark):
     return finish(rng, core, dark), page("Progress", css, body, dark), {"animated": True}
 
 
-def toggle(rng, dark):
-    cname, (hx, hd, tx) = pick_color(rng)
-    label = rng.choice(TOGGLES)
+def toggle(rng, dark, P):
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    label = P("label", lambda: rng.choice(TOGGLES))
     off = "#4b5563" if dark else "#cbd5e1"
     css = f""".row {{
   display: flex;
@@ -386,10 +413,11 @@ input:checked + .slider::before {{
     return finish(rng, core, dark), page("Toggle", css, body, dark), {"click": ".slider", "wait": 400}
 
 
-def text_fade(rng, dark):
-    cname, (hx, hd, tx) = pick_color(rng)
-    text = rng.choice(HEADINGS)
-    direction = rng.choice(["bottom", "left", "top", "fade"])
+def text_fade(rng, dark, P):
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    text = P("text", lambda: rng.choice(HEADINGS))
+    direction = P("direction", lambda: rng.choice(["bottom", "left", "top", "fade"]))
     start = {"bottom": "transform: translateY(40px);", "left": "transform: translateX(-60px);", "top": "transform: translateY(-40px);", "fade": ""}[direction]
     end = {"fade": ""}.get(direction, "transform: none;")
     css = f"""h1 {{
@@ -415,12 +443,12 @@ def text_fade(rng, dark):
     return finish(rng, core, dark), page("Heading", css, body, dark), {"animated": True, "delay": 60}
 
 
-def gradient_bg(rng, dark):
-    names = rng.sample(list(COLORS), 3)
+def gradient_bg(rng, dark, P):
+    names = P("colors", lambda: rng.sample(list(COLORS), 3))
     cols = [COLORS[n][0] for n in names]
-    speed = rng.choice(["slow", "normal", "fast"])
+    speed = P("speed", lambda: rng.choice(["slow", "normal", "fast"]))
     d = {"slow": "14s", "normal": "8s", "fast": "3s"}[speed]
-    text = rng.choice(HEADINGS)
+    text = P("text", lambda: rng.choice(HEADINGS))
     css = f"""body {{
   background: linear-gradient(-45deg, {cols[0]}, {cols[1]}, {cols[2]});
   background-size: 400% 400%;
@@ -447,9 +475,10 @@ h1 {{
     return finish(rng, core, False), page("Gradient", css, body, False), {"animated": True, "delay": 100}
 
 
-def navbar(rng, dark):
-    cname, (hx, hd, tx) = pick_color(rng)
-    items = rng.choice(NAVS)
+def navbar(rng, dark, P):
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    items = P("items", lambda: rng.choice(NAVS))
     css = f""".nav {{
   display: flex;
   gap: 28px;
@@ -480,9 +509,10 @@ def navbar(rng, dark):
     return finish(rng, core, dark), page("Navbar", css, body, dark), {"hover": ".nav a", "wait": 450}
 
 
-def modal(rng, dark):
-    cname, (hx, hd, tx) = pick_color(rng)
-    label, title, text = rng.choice(MODALS)
+def modal(rng, dark, P):
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    label, title, text = P("modal", lambda: rng.choice(MODALS))
     css = f""".btn {{
   padding: 12px 24px;
   border: none;
@@ -521,9 +551,10 @@ document.getElementById("close").addEventListener("click", () => overlay.classLi
     return finish(rng, core, dark), page("Modal", css, body, dark, script), {"click": "#open", "wait": 150}
 
 
-def tabs(rng, dark):
-    cname, (hx, hd, tx) = pick_color(rng)
-    names = rng.choice(TABS)
+def tabs(rng, dark, P):
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    names = P("tabs", lambda: rng.choice(TABS))
     css = f""".tabs {{
   width: 320px;
 }}
@@ -570,9 +601,10 @@ tabs.forEach((tab) => {
     return finish(rng, core, dark), page("Tabs", css, body, dark, script), {"click": ".tab:nth-child(2)", "wait": 150}
 
 
-def accordion(rng, dark):
-    cname, (hx, hd, tx) = pick_color(rng)
-    faqs = rng.sample(FAQS, 3)
+def accordion(rng, dark, P):
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    faqs = P("faqs", lambda: rng.sample(FAQS, 3))
     css = f""".faq {{
   width: 320px;
 }}
@@ -596,9 +628,10 @@ details p {{
     return finish(rng, core, dark), page("FAQ", css, body, dark), {"click": "summary", "wait": 150}
 
 
-def counter(rng, dark):
-    cname, (hx, hd, tx) = pick_color(rng)
-    minus = rng.random() < 0.5
+def counter(rng, dark, P):
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    minus = P("minus", lambda: rng.random() < 0.5)
     css = f""".counter {{
   text-align: center;
 }}
@@ -628,8 +661,9 @@ def counter(rng, dark):
     return finish(rng, core, dark), page("Counter", css, body, dark, script), {"click": "#inc", "wait": 100}
 
 
-def theme_toggle(rng, dark):
-    cname, (hx, hd, tx) = pick_color(rng)
+def theme_toggle(rng, dark, P):
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
     css = f"""body {{
   transition: background 0.3s, color 0.3s;
 }}
@@ -660,11 +694,12 @@ h1 {{
 
 # ------------------------------------------------------------- canvas patterns
 
-def bouncing_balls(rng, dark):
-    multi = rng.random() < 0.5
-    cname, (hx, hd, tx) = pick_color(rng)
-    rainbow = multi and rng.random() < 0.5
-    speed = rng.choice(["slow", "normal", "fast"])
+def bouncing_balls(rng, dark, P):
+    multi = P("multi", lambda: rng.random() < 0.5)
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    rainbow = P("rainbow", lambda: multi and rng.random() < 0.5)
+    speed = P("speed", lambda: rng.choice(["slow", "normal", "fast"]))
     v = {"slow": 1.5, "normal": 3, "fast": 6}[speed]
     n = 6 if multi else 1
     fill = '`hsl(${i * 60}, 80%, 55%)`' if rainbow else f'"{hx}"'
@@ -707,10 +742,11 @@ loop();"""
     return finish(rng, core, dark), page("Bouncing balls", css, body, dark, script), {"animated": True, "delay": 50, "canvas": "#c"}
 
 
-def particles(rng, dark):
-    kind = rng.choice(["snow", "bubbles", "stars"])
-    cname, (hx, hd, tx) = pick_color(rng)
-    count = rng.choice([60, 150])
+def particles(rng, dark, P):
+    kind = P("kind", lambda: rng.choice(["snow", "bubbles", "stars"]))
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    count = P("count", lambda: rng.choice([60, 150]))
     bg = {"snow": "#0b1e3a", "bubbles": "#0e4a6b", "stars": "#05060f"}[kind]
     if kind == "snow":
         color = "#ffffff"
@@ -754,9 +790,11 @@ loop();"""
     return finish(rng, core, False), page("Particles", css, body, False, script, bg="#f5f5f7"), {"animated": True, "delay": 50, "canvas": "#c"}
 
 
-def pong(rng, dark):
-    c1, (h1, _, _) = pick_color(rng)
-    c2, (h2, _, _) = pick_color(rng, exclude=(c1,))
+def pong(rng, dark, P):
+    c1 = P("c1", lambda: pick_color(rng)[0])
+    h1 = COLORS[c1][0]
+    c2 = P("c2", lambda: pick_color(rng, exclude=(c1,))[0])
+    h2 = COLORS[c2][0]
     script = f"""const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
 const W = canvas.width;
@@ -820,10 +858,12 @@ loop();"""
     return finish(rng, core, dark), page("Pong", css, body, dark, script), {"animated": True, "delay": 60, "keys": ["ArrowUp"], "canvas": "#c"}
 
 
-def snake(rng, dark):
-    c1, (h1, _, _) = pick_color(rng)
-    c2, (h2, _, _) = pick_color(rng, exclude=(c1,))
-    speed = rng.choice(["slow", "normal", "fast"])
+def snake(rng, dark, P):
+    c1 = P("c1", lambda: pick_color(rng)[0])
+    h1 = COLORS[c1][0]
+    c2 = P("c2", lambda: pick_color(rng, exclude=(c1,))[0])
+    h2 = COLORS[c2][0]
+    speed = P("speed", lambda: rng.choice(["slow", "normal", "fast"]))
     ms = {"slow": 150, "normal": 100, "fast": 60}[speed]
     script = f"""const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
@@ -884,9 +924,10 @@ setInterval(() => {{
     return finish(rng, core, dark), page("Snake", css, body, dark, script), {"animated": True, "delay": 120, "keys": ["ArrowDown"], "canvas": "#c"}
 
 
-def click_target(rng, dark):
-    cname, (hx, hd, tx) = pick_color(rng)
-    size = rng.choice(["small", "normal", "big"])
+def click_target(rng, dark, P):
+    cname = P("color", lambda: pick_color(rng)[0])
+    hx, hd, tx = COLORS[cname]
+    size = P("size", lambda: rng.choice(["small", "normal", "big"]))
     px = {"small": 36, "normal": 56, "big": 84}[size]
     css = f"""#score {{
   margin-bottom: 12px;
@@ -931,36 +972,180 @@ PATTERNS = [
     (gradient_bg, 0.6), (navbar, 0.6), (modal, 0.7), (tabs, 0.7), (accordion, 0.6), (counter, 0.7), (theme_toggle, 0.5),
     (bouncing_balls, 0.9), (particles, 0.8), (pong, 0.6), (snake, 0.8), (click_target, 0.7),
 ]
+BY_NAME = {f.__name__: f for f, _ in PATTERNS}
+
+# ------------------------------------------------------------------ edits
+#
+# An edit changes exactly one recorded parameter, and its instruction names the new
+# value, so "make it faster" only appears where it has one meaning (from normal).
+
+BTN_EFFECT = {"grow": ["grow on hover", "scale up on hover"], "lift": ["lift up with a shadow on hover", "float up on hover"],
+              "glow": ["glow on hover"], "darken": ["get darker on hover"], "outline": ["turn into an outline on hover"]}
+CARD_EFFECT = {"lift": ["lift up on hover"], "tilt": ["tilt slightly on hover"], "grow": ["grow on hover"]}
+SPIN_KIND = {"ring": "a spinning ring", "dots": "three pulsing dots", "bars": "stretching bars", "pulse": "a pulsing circle"}
+NO_THEME = {"gradient_bg", "theme_toggle", "particles"}
+
+
+def other(rng, options, cur):
+    return rng.choice([o for o in options if o != cur])
+
+
+def edit_color(rng, vals, key="color", who=None, avoid=()):
+    new = other(rng, [c for c in COLORS if c not in avoid], vals[key])
+    if who:
+        text = rng.choice([f"make {who} {new}", f"change {who} to {new}", f"I want {who} to be {new}"])
+    else:
+        text = rng.choice([f"make it {new}", f"change the color to {new}", f"use {new} instead", f"can you make it {new}?",
+                           f"switch the color to {new}", f"{new} please"])
+    return text, {key: new}
+
+
+def edit_speed(rng, vals, noun="it"):
+    cur = vals["speed"]
+    new = other(rng, ["slow", "normal", "fast"], cur)
+    if cur == "normal":
+        text = rng.choice([f"make {noun} {'faster' if new == 'fast' else 'slower'}", f"make {noun} {new}"])
+    elif new == "normal":
+        text = rng.choice([f"make {noun} normal speed", f"set {noun} to a normal speed"])
+    else:
+        text = f"make {noun} {new}"
+    return text, {"speed": new}
+
+
+def edits_for(rng, name, vals, dark):
+    """All edits that apply to this page, each as (instruction, changed params, new dark)."""
+    out = []
+    if "color" in vals:
+        out.append((*edit_color(rng, vals), dark))
+    if name not in NO_THEME:
+        if dark:
+            out.append((rng.choice(["use a light background", "switch to a light theme", "make the background light"]), {}, False))
+        else:
+            out.append((rng.choice(["use a dark background", "switch to a dark theme", "make the background dark"]), {}, True))
+    if name == "button_hover":
+        new = other(rng, LABELS, vals["label"])
+        out.append((rng.choice([f'change the text to "{new}"', f'make it say "{new}"', f'rename the button to "{new}"']), {"label": new}, dark))
+        new = other(rng, list(BTN_EFFECT), vals["effect"])
+        e = rng.choice(BTN_EFFECT[new])
+        out.append((rng.choice([f"make it {e} instead", f"I want it to {e}", f"can it {e} instead?"]), {"effect": new}, dark))
+        new = other(rng, ["rounded", "pill", "square"], vals["shape"])
+        w = {"rounded": "rounded", "pill": "pill-shaped", "square": "square"}[new]
+        out.append((rng.choice([f"make it {w}", f"make the button {w}"]), {"shape": new}, dark))
+    if name == "card_hover":
+        new = other(rng, list(CARD_EFFECT), vals["effect"])
+        e = rng.choice(CARD_EFFECT[new])
+        out.append((rng.choice([f"make it {e} instead", f"I want the card to {e}"]), {"effect": new}, dark))
+    if name == "toggle":
+        new = other(rng, TOGGLES, vals["label"])
+        out.append((rng.choice([f'change the label to "{new}"', f'make it say "{new}"']), {"label": new}, dark))
+    if name == "spinner":
+        out.append((*edit_speed(rng, vals), dark))
+        new = other(rng, list(SPIN_KIND), vals["kind"])
+        out.append((rng.choice([f"make it {SPIN_KIND[new]} instead", f"use {SPIN_KIND[new]} instead"]), {"kind": new}, dark))
+    if name == "progress":
+        out.append((*edit_speed(rng, vals), dark))
+        new = "square" if vals["shape"] == "rounded" else "rounded"
+        out.append((rng.choice(["give it square corners", "make the ends square"] if new == "square" else ["make it rounded", "round the corners"]), {"shape": new}, dark))
+    if name in ("text_fade", "gradient_bg"):
+        new = other(rng, HEADINGS, vals["text"])
+        out.append((rng.choice([f'change the heading to "{new}"', f'make it say "{new}"', f'change the text to "{new}"']), {"text": new}, dark))
+    if name == "gradient_bg":
+        out.append((*edit_speed(rng, vals, "the gradient"), dark))
+    if name == "text_fade":
+        new = other(rng, ["bottom", "left", "top", "fade"], vals["direction"])
+        how = {"bottom": "slide up from below", "left": "slide in from the left", "top": "drop down from the top", "fade": "only fade in, without moving"}[new]
+        out.append((f"make it {how} instead", {"direction": new}, dark))
+    if name == "counter":
+        out.append(("remove the minus button" if vals["minus"] else "add a minus button", {"minus": not vals["minus"]}, dark))
+    if name == "click_target":
+        new = other(rng, ["small", "normal", "big"], vals["size"])
+        out.append((f"make the circle {'normal-sized' if new == 'normal' else new}", {"size": new}, dark))
+    if name == "bouncing_balls":
+        out.append((*edit_speed(rng, vals), dark))
+        if not vals["multi"]:
+            out.append((rng.choice(["make it 6 balls", "add more balls, 6 in total"]), {"multi": True, "rainbow": False}, dark))
+        elif not vals["rainbow"]:
+            out.append(("make the balls rainbow-colored", {"rainbow": True}, dark))
+    if name == "snake":
+        out.append((*edit_color(rng, vals, "c1", "the snake", avoid=(vals["c2"],)), dark))
+        out.append((*edit_color(rng, vals, "c2", "the food", avoid=(vals["c1"],)), dark))
+        out.append((*edit_speed(rng, vals, "the snake"), dark))
+    if name == "pong":
+        out.append((*edit_color(rng, vals, "c1", "my paddle", avoid=(vals["c2"],)), dark))
+        out.append((*edit_color(rng, vals, "c2", "the computer's paddle", avoid=(vals["c1"],)), dark))
+    return out
+
+
+def make(fn, rng, dark, given=None):
+    P = Params(given)
+    desc, html, checks = fn(rng, dark, P)
+    return desc, html, checks, P.vals
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--n", type=int, default=6500)
-    ap.add_argument("--out", type=Path, default=Path("pages.jsonl"))
+    ap.add_argument("--singles", type=int, default=6500)
+    ap.add_argument("--edits", type=int, default=4500)
+    ap.add_argument("--switches", type=int, default=1200, help="second request is a new page, not an edit")
+    ap.add_argument("--out", type=Path, default=Path("."))
     ap.add_argument("--seed", type=int, default=1)
     a = ap.parse_args()
     rng = random.Random(a.seed)
     funcs, weights = zip(*PATTERNS)
-    seen = set()
-    rows = []
-    tries = 0
-    while len(rows) < a.n and tries < a.n * 20:
-        tries += 1
+    pages, page_ids, convs = [], {}, []
+
+    def add_page(name, html, checks):
+        if html not in page_ids:
+            page_ids[html] = len(pages)
+            pages.append({"id": len(pages), "pattern": name, "response": html, "checks": checks})
+        return page_ids[html]
+
+    def fresh():
         fn = rng.choices(funcs, weights)[0]
         dark = rng.random() < 0.3
-        desc, html, checks = fn(rng, dark)
-        key = (desc, html)
-        if key in seen:
+        desc, html, checks, vals = make(fn, rng, dark)
+        return fn, dark, desc, add_page(fn.__name__, html, checks), vals
+
+    seen = set()
+    while sum(1 for c in convs if len(c["turns"]) == 1) < a.singles:
+        fn, dark, desc, pid, _ = fresh()
+        if (desc, pid) in seen:
             continue
-        seen.add(key)
-        rows.append({"id": len(rows), "pattern": fn.__name__, "prompt": desc, "response": html, "checks": checks})
-    with a.out.open("w", encoding="utf-8") as f:
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    by = {}
-    for r in rows:
-        by[r["pattern"]] = by.get(r["pattern"], 0) + 1
-    print(len(rows), "pages", by)
+        seen.add((desc, pid))
+        convs.append({"kind": "single", "pattern": fn.__name__, "turns": [{"prompt": desc, "page": pid}]})
+    n = 0
+    while n < a.edits:
+        fn, dark, desc, pid, vals = fresh()
+        options = edits_for(rng, fn.__name__, vals, dark)
+        if not options:
+            continue
+        text, change, dark2 = rng.choice(options)
+        _, html2, checks2, _ = make(fn, random.Random(0), dark2, {**vals, **change})
+        pid2 = add_page(fn.__name__, html2, checks2)
+        if pid2 == pid:
+            continue
+        if rng.random() < 0.3:
+            text = text[0].upper() + text[1:]
+        if rng.random() < 0.4 and not text.endswith("?"):
+            text += "."
+        convs.append({"kind": "edit", "pattern": fn.__name__, "turns": [{"prompt": desc, "page": pid}, {"prompt": text, "page": pid2}]})
+        n += 1
+    for _ in range(a.switches):
+        fn, dark, desc, pid, _ = fresh()
+        fn2, dark2, desc2, pid2, _ = fresh()
+        convs.append({"kind": "switch", "pattern": fn2.__name__, "turns": [{"prompt": desc, "page": pid}, {"prompt": desc2, "page": pid2}]})
+
+    a.out.mkdir(parents=True, exist_ok=True)
+    with (a.out / "pages.jsonl").open("w", encoding="utf-8") as f:
+        for p in pages:
+            f.write(json.dumps(p, ensure_ascii=False) + "\n")
+    with (a.out / "convs.jsonl").open("w", encoding="utf-8") as f:
+        for i, c in enumerate(convs):
+            f.write(json.dumps({"id": i, **c}, ensure_ascii=False) + "\n")
+    kinds = {}
+    for c in convs:
+        kinds[c["kind"]] = kinds.get(c["kind"], 0) + 1
+    print(f"{len(pages)} unique pages, {len(convs)} conversations {kinds}")
 
 
 if __name__ == "__main__":

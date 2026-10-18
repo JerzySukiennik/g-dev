@@ -28,5 +28,5 @@ print("tokenizer :", tok)
 data = "/kaggle/working/g-dev/data/web_sft/data"
 subprocess.run([sys.executable, "train/finetune.py", "--init", ckpt, "--tokenizer", tok,
                 "--train", f"{data}/webpages_train.jsonl", "--val", f"{data}/webpages_val.jsonl",
-                "--out", "/kaggle/working/sft"], cwd="/kaggle/working/g-dev", check=True)
+                "--out", "/kaggle/working/sft", "--epochs", "2"], cwd="/kaggle/working/g-dev", check=True)
 subprocess.run(["cp", tok, "/kaggle/working/sft/tokenizer.json"], check=True)

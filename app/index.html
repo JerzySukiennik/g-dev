@@ -64,6 +64,17 @@ textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent
 .send:active { transform: scale(.97); }
 .send:disabled { opacity: .4; cursor: default; }
 .hint { color: var(--mut); font-size: 12px; margin-top: 6px; }
+.ctx { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font: 12px var(--mono); color: var(--mut); }
+.ctx b { color: var(--fg); font-weight: 600; }
+.ctx button { border: 1px solid var(--line); background: var(--panel); color: var(--mut); border-radius: 6px; font: 12px var(--sans); padding: 2px 8px; cursor: pointer; }
+.ctx button:hover { color: var(--fg); border-color: var(--acc); }
+.diff { margin-top: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 0; font: 12px/1.45 var(--mono); max-height: 220px; overflow: auto; }
+.diff div { padding: 0 10px; white-space: pre; }
+.diff .add { background: var(--acc-soft); }
+.diff .add::before { content: "+ "; color: var(--acc); }
+.diff .del { color: var(--mut); text-decoration: line-through; }
+.diff .del::before { content: "- "; }
+.diff .gap { color: var(--mut); }
 .side { display: grid; grid-template-rows: auto 1fr; min-height: 0; background: var(--panel); }
 .bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
 .tab { border: 0; background: none; color: var(--mut); font: 13px var(--sans); padding: 5px 10px; border-radius: 6px; cursor: pointer; }
@@ -102,11 +113,12 @@ iframe { width: 100%; height: 100%; border: 0; background: #fff; display: block;
         </div>
       </div>
       <div class="composer">
+        <div class="ctx hidden" id="ctx"><span>Next message edits <b id="ctxfile"></b></span><button id="newpage">New page instead</button></div>
         <div class="box">
           <textarea id="input" rows="1" placeholder="Make a pink pill button &quot;Play&quot; that glows on hover" autofocus></textarea>
           <button class="send" id="send">Send</button>
         </div>
-        <div class="hint">Enter to send, Shift+Enter for a new line. English works best.</div>
+        <div class="hint">Enter to send, Shift+Enter for a new line. English works best. Follow-ups like "make it red" edit the open page.</div>
       </div>
     </section>
     <section class="side">
@@ -135,7 +147,7 @@ const EXAMPLES = [
 ];
 const $ = (id) => document.getElementById(id);
 const log = $("log"), input = $("input"), send = $("send"), frame = $("frame"), src = $("src"), blank = $("blank");
-let busy = false, controller = null, view = "preview", current = null, previewToken = 0, errors = [];
+let busy = false, controller = null, view = "preview", base = null, previewToken = 0, errors = [];
 
 for (const ex of EXAMPLES) {
   const b = document.createElement("button");
@@ -194,7 +206,44 @@ $("files").onchange = async (e) => {
   const name = e.target.value;
   $("open").href = "/pages/" + name;
   show(await (await fetch("/pages/" + name)).text());
+  setBase(name);
 };
+
+function setBase(name) {
+  base = name;
+  $("ctx").classList.toggle("hidden", !name);
+  $("ctxfile").textContent = name || "";
+}
+$("newpage").onclick = () => { setBase(null); input.focus(); };
+
+function diffLines(a, b) {
+  const n = a.length, m = b.length, L = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) { out.push(["same", a[i]]); i++; j++; }
+    else if (j < m && (i >= n || L[i][j + 1] >= L[i + 1][j])) { out.push(["add", b[j]]); j++; }
+    else { out.push(["del", a[i]]); i++; }
+  }
+  return out;
+}
+
+function renderDiff(parent, oldText, newText) {
+  const d = diffLines(oldText.split("\n"), newText.split("\n"));
+  const add = d.filter((x) => x[0] === "add").length, del = d.filter((x) => x[0] === "del").length;
+  const box = el("div", "diff");
+  let lastShown = -2;
+  d.forEach((x, k) => {
+    const near = d.slice(Math.max(0, k - 1), k + 2).some((y) => y[0] !== "same");
+    if (x[0] === "same" && !near) return;
+    if (k - lastShown > 1 && lastShown >= 0) box.appendChild(el("div", "gap", "⋯"));
+    box.appendChild(el("div", x[0] === "same" ? "" : x[0], x[1] || " "));
+    lastShown = k;
+  });
+  parent.appendChild(box);
+  return { add, del };
+}
 
 function autosize() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 160) + "px"; }
 input.addEventListener("input", autosize);
@@ -235,10 +284,12 @@ async function go() {
   log.appendChild(turn);
   setBusy(true);
   controller = new AbortController();
-  let write = null, code = null, text = "", file = "", lastPreview = 0, info = null, t0 = performance.now();
-  const lineCount = () => text.split("\n").length;
+  let write = null, code = null, text = "", file = "", edit = false, lastPreview = 0, info = null, t0 = performance.now();
+  const sentBase = base;
+  const oldText = sentBase ? await (await fetch("/pages/" + sentBase + "?t=" + Date.now())).text() : "";
+  if (sentBase) { const r = step(steps, `<b>Read</b>(pages/${esc(sentBase)})`, "ok"); sub(r, `${oldText.split("\n").length} lines, sent to the model with your request`); }
   try {
-    const res = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }), signal: controller.signal });
+    const res = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt, base: sentBase }), signal: controller.signal });
     if (res.status === 409) throw new Error("the model is busy with another request");
     if (!res.ok) throw new Error("server error " + res.status);
     const reader = res.body.getReader(), dec = new TextDecoder();
@@ -253,8 +304,10 @@ async function go() {
         if (!line.startsWith("data: ")) continue;
         const ev = JSON.parse(line.slice(6));
         if (ev.t === "start") {
-          file = ev.file;
-          write = step(steps, `<b>Write</b>(pages/${esc(file)})`);
+          if (ev.note) { const w = step(steps, "<b>Context</b>", "warn"); sub(w, ev.note, "warnt"); }
+        } else if (ev.t === "file") {
+          file = ev.file; edit = ev.edit;
+          write = step(steps, `<b>${edit ? "Edit" : "Write"}</b>(pages/${esc(file)})`);
           const meta = sub(write, "writing…");
           const tg = el("button", "toggle", "hide");
           meta.appendChild(tg);
@@ -268,7 +321,7 @@ async function go() {
           const stick = code.scrollTop + code.clientHeight >= code.scrollHeight - 30;
           code.textContent = text;
           if (stick) code.scrollTop = code.scrollHeight;
-          write._meta.textContent = `writing… ${lineCount()} lines `;
+          write._meta.textContent = `writing… ${text.split("\n").length} lines `;
           const now = performance.now();
           if (now - lastPreview > 1500 && /<body[^>]*>[\s\S]*<\//i.test(text)) { show(text); lastPreview = now; }
           log.scrollTop = log.scrollHeight;
@@ -282,9 +335,16 @@ async function go() {
     write._meta.textContent = `${info.lines} lines, ${info.tokens} tokens in ${info.secs}s (${(info.tokens / info.secs).toFixed(0)} tok/s) `;
     code.classList.add("closed");
     write.querySelector(".toggle").textContent = "show";
+    if (edit) {
+      const ch = renderDiff(write, oldText, text);
+      sub(write, ch.add || ch.del ? `${ch.add} line${ch.add === 1 ? "" : "s"} added, ${ch.del} removed` : "no changes", ch.add || ch.del ? "" : "warnt");
+    } else if (sentBase) {
+      sub(write, "a different kind of page, so it was saved as a new file");
+    }
     if (!info.complete) sub(write, "stopped at the token limit, the page may be cut off", "warnt");
     show(text);
     await loadFiles(file);
+    setBase(file);
     const pv = step(steps, `<b>Preview</b>(${esc(file)})`, "ok");
     sub(pv, "opened in the panel on the right");
     const ck = step(steps, "<b>Check</b>(console)");
@@ -296,12 +356,12 @@ async function go() {
       ck.className = "step ok";
       sub(ck, "no errors after 1.5 s");
     }
-    const html = text.trim();
-    if (!/<\/html>\s*$/i.test(html)) { const w = step(steps, "<b>Check</b>(structure)", "warn"); sub(w, "the document is not closed", "warnt"); }
+    if (!/<\/html>\s*$/i.test(text.trim())) { const w = step(steps, "<b>Check</b>(structure)", "warn"); sub(w, "the document is not closed", "warnt"); }
   } catch (err) {
     if (write) write.className = "step bad";
-    const s = step(steps, err.name === "AbortError" ? "<b>Stopped</b>" : "<b>Error</b>", err.name === "AbortError" ? "warn" : "bad");
-    sub(s, err.name === "AbortError" ? `you stopped it after ${((performance.now() - t0) / 1000).toFixed(0)}s` : err.message, err.name === "AbortError" ? "warnt" : "err");
+    const stopped = err.name === "AbortError";
+    const s = step(steps, stopped ? "<b>Stopped</b>" : "<b>Error</b>", stopped ? "warn" : "bad");
+    sub(s, stopped ? `you stopped it after ${((performance.now() - t0) / 1000).toFixed(0)}s` : err.message, stopped ? "warnt" : "err");
     if (text) show(text);
   } finally {
     setBusy(false);
@@ -317,7 +377,7 @@ async function go() {
     setBusy(false);
     await loadFiles();
     const sel = $("files");
-    if (sel.value) show(await (await fetch("/pages/" + sel.value)).text());
+    if (sel.value) { show(await (await fetch("/pages/" + sel.value)).text()); setBase(sel.value); }
   } catch {
     $("state").textContent = "server offline";
   }

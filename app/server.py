@@ -5,12 +5,16 @@ Endpoints
   GET  /api/status       model info
   GET  /api/files        pages written so far, newest first
   GET  /pages/<name>     a written page
-  POST /api/generate     {"prompt": "..."} -> server-sent events: start, delta, done, error
+  POST /api/generate     {"prompt": "...", "base": "file.html"?} -> server-sent events
 
-One generation runs at a time; closing the request stops it. The server exits after
-30 idle minutes so the ~700 MB model does not sit in memory; the G-Dev app starts it again.
- Inference is CPU only,
-at low priority and on four threads, so the Mac stays quiet and usable.
+With a base file the model sees the conversation that produced it (the original request
+and the current page) followed by the new request, the format it was fine-tuned on. If
+the answer has the same <title> as the base it is an edit and overwrites the file (the
+previous version is kept in pages/.versions); otherwise it is a new page.
+
+Events: start, file {file, edit}, delta {text}, done {...}. One generation at a time,
+closing the request stops it, and the server exits after 30 idle minutes so the model
+does not sit in memory; the G-Dev app starts it again.
 
     python app/server.py [port]
 """
@@ -35,15 +39,17 @@ from model.gpt import GPT, GPTConfig  # noqa: E402
 
 APP = Path(__file__).resolve().parent
 PAGES = APP / "pages"
+VERSIONS = PAGES / ".versions"
 SFT_CKPT = ROOT / "Niepotrzebne/sft-final/sft/ckpt.pt"
 WEIGHTS = ROOT / "Niepotrzebne/gdev-sft-weights.pt"
 TOKENIZER = ROOT / "Niepotrzebne/sft-final/sft/tokenizer.json"
 MAX_TOKENS = 1400
+ANSWER_ROOM = 900
 THREADS = 4
 IDLE_EXIT = 30 * 60
 LAST = [time.time()]
 
-PAGES.mkdir(exist_ok=True)
+VERSIONS.mkdir(parents=True, exist_ok=True)
 os.nice(10)
 torch.set_num_threads(THREADS)
 
@@ -80,6 +86,16 @@ def slug_for(prompt):
     return name
 
 
+def title_of(html):
+    m = re.search(r"<title>(.*?)</title>", html, re.S)
+    return m.group(1).strip() if m else None
+
+
+def read_meta(name):
+    side = (PAGES / name).with_suffix(".json")
+    return json.loads(side.read_text()) if side.exists() else {}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -102,14 +118,10 @@ class Handler(BaseHTTPRequestHandler):
                                               "context": MODEL.config.block_size}))
         if self.path == "/api/files":
             files = sorted(PAGES.glob("*.html"), key=lambda p: p.stat().st_mtime, reverse=True)
-            meta = []
-            for p in files:
-                side = p.with_suffix(".json")
-                info = json.loads(side.read_text()) if side.exists() else {}
-                meta.append({"name": p.name, "prompt": info.get("prompt", ""), "time": p.stat().st_mtime})
-            return self.send(200, json.dumps(meta))
+            return self.send(200, json.dumps([{"name": p.name, "prompt": read_meta(p.name).get("prompt", ""),
+                                               "time": p.stat().st_mtime} for p in files]))
         if self.path.startswith("/pages/"):
-            p = PAGES / Path(self.path[7:]).name
+            p = PAGES / Path(self.path[7:].split("?")[0]).name
             if p.exists() and p.suffix == ".html":
                 return self.send(200, p.read_bytes(), "text/html; charset=utf-8")
         self.send(404, '{"error":"not found"}')
@@ -120,6 +132,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, '{"error":"not found"}')
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         prompt = " ".join(str(body.get("prompt", "")).split())[:600]
+        base = Path(str(body.get("base") or "")).name
         if not prompt:
             return self.send(400, '{"error":"empty prompt"}')
         if not LOCK.acquire(blocking=False):
@@ -129,7 +142,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.stream(prompt)
+            self.stream(prompt, base)
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
@@ -139,30 +152,52 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(f"data: {json.dumps(obj)}\n\n".encode())
         self.wfile.flush()
 
-    def stream(self, prompt):
-        name = slug_for(prompt)
-        self.event({"t": "start", "file": name})
-        ids = torch.tensor([TOK.encode(f"<|user|>{prompt}<|end|><|assistant|>").ids])
-        out, sent, t0 = [], "", time.time()
-        finished = False
+    def stream(self, prompt, base):
+        context, old, origin = "", None, prompt
+        if base and (PAGES / base).exists():
+            old = (PAGES / base).read_text(encoding="utf-8")
+            origin = read_meta(base).get("prompt") or prompt
+            context = f"<|user|>{origin}<|end|><|assistant|>{old}<|end|>"
+        full = context + f"<|user|>{prompt}<|end|><|assistant|>"
+        ids = TOK.encode(full).ids
+        note = None
+        if context and len(ids) + ANSWER_ROOM > MODEL.config.block_size:
+            note = "the previous page is too long to fit next to the request, so this starts a new page"
+            context, old, origin = "", None, prompt
+            ids = TOK.encode(f"<|user|>{prompt}<|end|><|assistant|>").ids
+        self.event({"t": "start", "context": bool(context), "note": note})
+        decided = None if old else (slug_for(prompt), False)
+        if decided:
+            self.event({"t": "file", "file": decided[0], "edit": False})
+        out, sent, t0, finished = [], "", time.time(), False
         with torch.no_grad():
-            for tid, _ in MODEL.generate(ids, MAX_TOKENS, temperature=0.05, top_k=40, repetition_penalty=1.0):
+            for tid, _ in MODEL.generate(torch.tensor([ids]), MAX_TOKENS, temperature=0.05, top_k=40, repetition_penalty=1.0):
                 if tid in END:
                     finished = True
                     break
                 out.append(tid)
                 text = TOK.decode(out, skip_special_tokens=True)
-                if len(out) % 3 == 0 and not text.endswith("�"):
+                if not decided and ("</title>" in text or len(out) > 60):
+                    same = title_of(text) is not None and title_of(text) == title_of(old)
+                    decided = (base, True) if same else (slug_for(prompt), False)
+                    self.event({"t": "file", "file": decided[0], "edit": decided[1]})
+                if decided and len(out) % 3 == 0 and not text.endswith("�"):
                     self.event({"t": "delta", "text": text[len(sent):]})
                     sent = text
         text = TOK.decode(out, skip_special_tokens=True)
+        if not decided:
+            decided = (slug_for(prompt), False)
+            self.event({"t": "file", "file": decided[0], "edit": False})
         if text[len(sent):]:
             self.event({"t": "delta", "text": text[len(sent):]})
+        name, edit = decided
+        if edit:
+            (VERSIONS / f"{Path(name).stem}.{int(time.time())}.html").write_text(old, encoding="utf-8")
         LAST[0] = time.time()
         (PAGES / name).write_text(text, encoding="utf-8")
-        (PAGES / name).with_suffix(".json").write_text(json.dumps({"prompt": prompt}))
+        (PAGES / name).with_suffix(".json").write_text(json.dumps({"prompt": origin if edit else prompt}))
         secs = time.time() - t0
-        self.event({"t": "done", "file": name, "tokens": len(out), "secs": round(secs, 1),
+        self.event({"t": "done", "file": name, "edit": edit, "tokens": len(out), "secs": round(secs, 1),
                     "lines": text.count("\n") + 1, "complete": finished})
 
 
