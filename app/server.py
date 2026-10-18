@@ -12,9 +12,10 @@ and the current page) followed by the new request, the format it was fine-tuned 
 the answer has the same <title> as the base it is an edit and overwrites the file (the
 previous version is kept in pages/.versions); otherwise it is a new page.
 
-Events: start, file {file, edit}, delta {text}, done {...}. `sure` in done is the share of
-tokens the model chose with at least 90% probability (measured without temperature): near 1.0
-on the kinds of pages it was trained on, clearly lower when it is guessing. One generation at a time,
+Events: start {unknown}, file {file, edit}, delta {text}, done {...}. `unknown` lists the words
+of the request that never appear in any training request. The model's own probabilities do
+not reveal guessing (after SFT it is near-certain even on requests it cannot do), so this
+lexical check is the honest signal that a request is outside what it learned. One generation at a time,
 closing the request stops it, and the server exits after 30 idle minutes so the model
 does not sit in memory; the G-Dev app starts it again.
 
@@ -72,6 +73,30 @@ MODEL, META = load_model()
 TOK = Tokenizer.from_file(str(TOKENIZER))
 END = {TOK.token_to_id("<|end|>"), TOK.token_to_id("<|endoftext|>")}
 PARAMS = sum(p.numel() for p in MODEL.parameters())
+SFT_DATA = ROOT / "data/web_sft/data/webpages_train.jsonl"
+COMMON = {"a", "an", "the", "me", "my", "i", "you", "it", "its", "it's", "that's", "i'm", "don't", "that", "this", "with", "and", "or", "of", "to",
+          "in", "on", "for", "please", "can", "could", "would", "want", "need", "make", "create", "build", "write", "give",
+          "generate", "design", "some", "is", "are", "be", "so", "but", "just", "like", "which", "when", "what", "there",
+          "should", "not", "no", "yes", "do", "does", "have", "has", "from", "into", "at", "by", "as", "if", "then",
+          "now", "also", "very", "really", "more", "less", "instead", "page", "website", "site", "html", "one", "meant"}
+
+
+def words(text):
+    return re.findall(r"[a-z0-9]+(?:'[a-z]+)?", text.lower())
+
+
+KNOWN = set()
+for line in open(SFT_DATA, encoding="utf-8"):
+    for turn in re.findall(r"<\|user\|>(.*?)<\|end\|>", json.loads(line)["text"]):
+        KNOWN.update(words(turn))
+
+
+def unknown_words(prompt):
+    out = []
+    for w in words(prompt):
+        if w not in KNOWN and w not in COMMON and w.rstrip("s") not in KNOWN and w not in out:
+            out.append(w)
+    return out
 LOCK = threading.Lock()
 print(f"model ready in {time.time()-t0:.0f}s, {PARAMS/1e6:.0f}M params, {THREADS} threads", flush=True)
 
@@ -167,14 +192,13 @@ class Handler(BaseHTTPRequestHandler):
             note = "the previous page is too long to fit next to the request, so this starts a new page"
             context, old, origin = "", None, prompt
             ids = TOK.encode(f"<|user|>{prompt}<|end|><|assistant|>").ids
-        self.event({"t": "start", "context": bool(context), "note": note})
+        self.event({"t": "start", "context": bool(context), "note": note, "unknown": unknown_words(prompt)})
         decided = None if old else (slug_for(prompt), False)
         if decided:
             self.event({"t": "file", "file": decided[0], "edit": False})
-        out, sent, t0, finished, logp = [], "", time.time(), False, []
+        out, sent, t0, finished = [], "", time.time(), False
         with torch.no_grad():
             for tid, probs in MODEL.generate(torch.tensor([ids]), MAX_TOKENS, greedy=True):
-                logp.append(float(torch.log(probs[tid].clamp_min(1e-9))))
                 if tid in END:
                     finished = True
                     break
@@ -200,9 +224,8 @@ class Handler(BaseHTTPRequestHandler):
         (PAGES / name).write_text(text, encoding="utf-8")
         (PAGES / name).with_suffix(".json").write_text(json.dumps({"prompt": origin if edit else prompt}))
         secs = time.time() - t0
-        sure = sum(1 for x in logp if x > -0.105) / max(1, len(logp))
         self.event({"t": "done", "file": name, "edit": edit, "tokens": len(out), "secs": round(secs, 1),
-                    "lines": text.count("\n") + 1, "complete": finished, "sure": round(sure, 4)})
+                    "lines": text.count("\n") + 1, "complete": finished})
 
 
 if __name__ == "__main__":

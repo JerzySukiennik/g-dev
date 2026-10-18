@@ -304,6 +304,13 @@ async function go() {
         if (!line.startsWith("data: ")) continue;
         const ev = JSON.parse(line.slice(6));
         if (ev.t === "start") {
+          if (ev.unknown && ev.unknown.length) {
+            const w = step(steps, "<b>Check</b>(request)", "warn");
+            sub(w, `never seen in training: ${ev.unknown.join(", ")}. G-Dev will fall back to the closest page it knows`, "warnt");
+          } else {
+            const k = step(steps, "<b>Check</b>(request)", "ok");
+            sub(k, "every word appears in the training requests");
+          }
           if (ev.note) { const w = step(steps, "<b>Context</b>", "warn"); sub(w, ev.note, "warnt"); }
         } else if (ev.t === "file") {
           file = ev.file; edit = ev.edit;
@@ -342,11 +349,6 @@ async function go() {
       sub(write, "a different kind of page, so it was saved as a new file");
     }
     if (!info.complete) sub(write, "stopped at the token limit, the page may be cut off", "warnt");
-    if (info.sure != null) {
-      const pct = Math.round(info.sure * 100);
-      if (pct >= 95) sub(write, `confident on ${pct}% of tokens`);
-      else sub(write, `confident on only ${pct}% of tokens: this is probably outside what G-Dev was trained on, expect a guess`, "warnt");
-    }
     show(text);
     await loadFiles(file);
     setBase(file);
