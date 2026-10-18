@@ -399,7 +399,7 @@ class GPT(nn.Module):
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=0.8, top_k=50,
                  repetition_penalty=1.3,
-                 capture: Capture | None = None, use_cache: bool = True):
+                 capture: Capture | None = None, use_cache: bool = True, greedy: bool = False):
         """Sample tokens autoregressively, yielding (token_id, probs) each step.
 
         With use_cache the prompt is processed once in a single "prefill" pass,
@@ -412,6 +412,9 @@ class GPT(nn.Module):
         winning again next step. repetition_penalty pushes already-seen
         tokens' logits toward zero (CTRL-style: divide positive logits,
         multiply negative ones) so the same choice doesn't keep re-winning.
+
+        greedy=True always takes the most likely token and yields the model's
+        untempered distribution, so the caller can see how sure each choice was.
         """
         self.eval()
         kv = KVCache(self.config.n_layer) if use_cache else None
@@ -422,6 +425,17 @@ class GPT(nn.Module):
 
         for _ in range(max_new_tokens):
             logits, _ = self(step_in, capture=capture, kv=kv)
+            if greedy:
+                probs = F.softmax(logits[:, -1, :].float(), dim=-1)
+                next_id = probs.argmax(dim=-1, keepdim=True)
+                idx = torch.cat((idx, next_id), dim=1)
+                yield next_id.item(), probs[0]
+                if kv is not None:
+                    kv.trim(self.config.block_size - 1)
+                    step_in = next_id
+                else:
+                    step_in = idx[:, -self.config.block_size:]
+                continue
             logits = logits[:, -1, :] / max(temperature, 1e-5)
 
             if repetition_penalty != 1.0:

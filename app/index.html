@@ -342,6 +342,11 @@ async function go() {
       sub(write, "a different kind of page, so it was saved as a new file");
     }
     if (!info.complete) sub(write, "stopped at the token limit, the page may be cut off", "warnt");
+    if (info.sure != null) {
+      const pct = Math.round(info.sure * 100);
+      if (pct >= 95) sub(write, `confident on ${pct}% of tokens`);
+      else sub(write, `confident on only ${pct}% of tokens: this is probably outside what G-Dev was trained on, expect a guess`, "warnt");
+    }
     show(text);
     await loadFiles(file);
     setBase(file);

@@ -12,7 +12,9 @@ and the current page) followed by the new request, the format it was fine-tuned 
 the answer has the same <title> as the base it is an edit and overwrites the file (the
 previous version is kept in pages/.versions); otherwise it is a new page.
 
-Events: start, file {file, edit}, delta {text}, done {...}. One generation at a time,
+Events: start, file {file, edit}, delta {text}, done {...}. `sure` in done is the share of
+tokens the model chose with at least 90% probability (measured without temperature): near 1.0
+on the kinds of pages it was trained on, clearly lower when it is guessing. One generation at a time,
 closing the request stops it, and the server exits after 30 idle minutes so the model
 does not sit in memory; the G-Dev app starts it again.
 
@@ -169,9 +171,10 @@ class Handler(BaseHTTPRequestHandler):
         decided = None if old else (slug_for(prompt), False)
         if decided:
             self.event({"t": "file", "file": decided[0], "edit": False})
-        out, sent, t0, finished = [], "", time.time(), False
+        out, sent, t0, finished, logp = [], "", time.time(), False, []
         with torch.no_grad():
-            for tid, _ in MODEL.generate(torch.tensor([ids]), MAX_TOKENS, temperature=0.05, top_k=40, repetition_penalty=1.0):
+            for tid, probs in MODEL.generate(torch.tensor([ids]), MAX_TOKENS, greedy=True):
+                logp.append(float(torch.log(probs[tid].clamp_min(1e-9))))
                 if tid in END:
                     finished = True
                     break
@@ -197,8 +200,9 @@ class Handler(BaseHTTPRequestHandler):
         (PAGES / name).write_text(text, encoding="utf-8")
         (PAGES / name).with_suffix(".json").write_text(json.dumps({"prompt": origin if edit else prompt}))
         secs = time.time() - t0
+        sure = sum(1 for x in logp if x > -0.105) / max(1, len(logp))
         self.event({"t": "done", "file": name, "edit": edit, "tokens": len(out), "secs": round(secs, 1),
-                    "lines": text.count("\n") + 1, "complete": finished})
+                    "lines": text.count("\n") + 1, "complete": finished, "sure": round(sure, 4)})
 
 
 if __name__ == "__main__":
