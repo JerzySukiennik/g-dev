@@ -1,4 +1,4 @@
-"""G-Dev panel server: loads the fine-tuned model once and streams pages as it writes them.
+"""G-Dev local panel server: streams pages as the model writes them.
 
 Endpoints
   GET  /                 the panel
@@ -7,24 +7,15 @@ Endpoints
   GET  /pages/<name>     a written page
   POST /api/generate     {"prompt": "...", "base": "file.html"?} -> server-sent events
 
-With a base file the model sees the conversation that produced it (the original request
-and the current page) followed by the new request, the format it was fine-tuned on. If
-the answer has the same <title> as the base it is an edit and overwrites the file (the
-previous version is kept in pages/.versions); otherwise it is a new page.
-
-Events: start {unknown}, file {file, edit}, delta {text}, done {...}. `unknown` lists the words
-of the request that never appear in any training request. The model's own probabilities do
-not reveal guessing (after SFT it is near-certain even on requests it cannot do), so this
-lexical check is the honest signal that a request is outside what it learned. One generation at a time,
-closing the request stops it, and the server exits after 30 idle minutes so the model
-does not sit in memory; the G-Dev app starts it again.
+All model work is in engine.py, shared with the online bridge. One generation at a time,
+closing the request stops it, and the server exits after 30 idle minutes so the model does
+not sit in memory; the G-Dev app starts it again.
 
     python app/server.py [port]
 """
 
 import json
 import os
-import pathlib
 import re
 import sys
 import threading
@@ -32,97 +23,27 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import torch
-from tokenizers import Tokenizer
-
-sys.modules.setdefault("pathlib._local", pathlib)
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-from model.gpt import GPT, GPTConfig  # noqa: E402
+import engine
 
 APP = Path(__file__).resolve().parent
 PAGES = APP / "pages"
 VERSIONS = PAGES / ".versions"
-# Newest fine-tune first; an older one is used while a newer one is still training.
-RUNS = [("sft3-final", "gdev-sft3-weights.pt"), ("sft2-final", "gdev-sft2-weights.pt")]
-for run, weights in RUNS:
-    ck = ROOT / "Niepotrzebne" / run / "sft/ckpt.pt"
-    tk = ROOT / "Niepotrzebne" / run / "sft/tokenizer.json"
-    if tk.exists() and ((ROOT / "Niepotrzebne" / weights).exists() or (ck.exists() and ck.stat().st_size > 1e9)):
-        break
-SFT_CKPT = ROOT / "Niepotrzebne" / run / "sft/ckpt.pt"
-WEIGHTS = ROOT / "Niepotrzebne" / weights
-TOKENIZER = ROOT / "Niepotrzebne" / run / "sft/tokenizer.json"
-MAX_TOKENS = 1400
-ANSWER_ROOM = 900
-THREADS = 4
 IDLE_EXIT = 30 * 60
 LAST = [time.time()]
-
-VERSIONS.mkdir(parents=True, exist_ok=True)
-os.nice(10)
-torch.set_num_threads(THREADS)
-
-
-def load_model():
-    if not WEIGHTS.exists():
-        ck = torch.load(SFT_CKPT, map_location="cpu", weights_only=False)
-        torch.save({"config": ck["config"], "model": ck["model"], "sft_steps": ck["step"]}, WEIGHTS)
-    ck = torch.load(WEIGHTS, map_location="cpu", weights_only=False)
-    m = GPT(GPTConfig(**ck["config"]))
-    m.load_state_dict(ck["model"])
-    m.eval()
-    return m, ck
-
-
-t0 = time.time()
-MODEL, META = load_model()
-TOK = Tokenizer.from_file(str(TOKENIZER))
-END = {TOK.token_to_id("<|end|>"), TOK.token_to_id("<|endoftext|>")}
-PARAMS = sum(p.numel() for p in MODEL.parameters())
-SFT_DATA = ROOT / "data/web_sft/data/webpages_train.jsonl"
-COMMON = {"a", "an", "the", "me", "my", "i", "you", "it", "its", "it's", "that's", "i'm", "don't", "that", "this", "with", "and", "or", "of", "to",
-          "in", "on", "for", "please", "can", "could", "would", "want", "need", "make", "create", "build", "write", "give",
-          "generate", "design", "some", "is", "are", "be", "so", "but", "just", "like", "which", "when", "what", "there",
-          "should", "not", "no", "yes", "do", "does", "have", "has", "from", "into", "at", "by", "as", "if", "then",
-          "now", "also", "very", "really", "more", "less", "instead", "page", "website", "site", "html", "one", "meant"}
-
-
-def words(text):
-    return re.findall(r"[a-z0-9]+(?:'[a-z]+)?", text.lower())
-
-
-KNOWN = set()
-for line in open(SFT_DATA, encoding="utf-8"):
-    for turn in re.findall(r"<\|user\|>(.*?)<\|end\|>", json.loads(line)["text"]):
-        KNOWN.update(words(turn))
-
-
-def unknown_words(prompt):
-    out = []
-    for w in words(prompt):
-        if w not in KNOWN and w not in COMMON and w.rstrip("s") not in KNOWN and w not in out:
-            out.append(w)
-    return out
 LOCK = threading.Lock()
-print(f"model ready in {time.time()-t0:.0f}s, {PARAMS/1e6:.0f}M params, {THREADS} threads", flush=True)
+VERSIONS.mkdir(parents=True, exist_ok=True)
+
+STOP = {"a", "an", "the", "make", "me", "create", "build", "write", "generate", "give", "please", "can", "you", "i", "need",
+        "design", "with", "that", "and", "on", "in", "it", "of", "to", "page", "which", "when", "is", "nice", "simple"}
 
 
 def slug_for(prompt):
-    words = re.findall(r"[a-z0-9]+", prompt.lower())
-    stop = {"a", "an", "the", "make", "create", "build", "write", "generate", "give", "me", "please", "can", "you",
-            "i", "need", "design", "with", "that", "and", "on", "in", "it", "of", "to", "page", "which", "when", "is"}
-    core = [w for w in words if w not in stop][:4] or ["page"]
+    core = [w for w in re.findall(r"[a-z0-9]+", prompt.lower()) if w not in STOP][:4] or ["page"]
     base = "-".join(core)[:40]
     name, n = f"{base}.html", 2
     while (PAGES / name).exists():
         name, n = f"{base}-{n}.html", n + 1
     return name
-
-
-def title_of(html):
-    m = re.search(r"<title>(.*?)</title>", html, re.S)
-    return m.group(1).strip() if m else None
 
 
 def read_meta(name):
@@ -145,11 +66,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         LAST[0] = time.time()
+        self.path = self.path.split("?")[0] if not self.path.startswith("/pages/") else self.path
         if self.path in ("/", "/index.html"):
             return self.send(200, (APP / "index.html").read_bytes(), "text/html; charset=utf-8")
         if self.path == "/api/status":
-            return self.send(200, json.dumps({"params": PARAMS, "threads": THREADS, "sft_steps": META.get("sft_steps"),
-                                              "context": MODEL.config.block_size}))
+            return self.send(200, json.dumps(engine.info()))
         if self.path == "/api/files":
             files = sorted(PAGES.glob("*.html"), key=lambda p: p.stat().st_mtime, reverse=True)
             return self.send(200, json.dumps([{"name": p.name, "prompt": read_meta(p.name).get("prompt", ""),
@@ -187,56 +108,32 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def stream(self, prompt, base):
-        context, old, origin = "", None, prompt
-        if base and (PAGES / base).exists():
-            old = (PAGES / base).read_text(encoding="utf-8")
-            origin = read_meta(base).get("prompt") or prompt
-            context = f"<|user|>{origin}<|end|><|assistant|>{old}<|end|>"
-        full = context + f"<|user|>{prompt}<|end|><|assistant|>"
-        ids = TOK.encode(full).ids
-        note = None
-        if context and len(ids) + ANSWER_ROOM > MODEL.config.block_size:
-            note = "the previous page is too long to fit next to the request, so this starts a new page"
-            context, old, origin = "", None, prompt
-            ids = TOK.encode(f"<|user|>{prompt}<|end|><|assistant|>").ids
-        self.event({"t": "start", "context": bool(context), "note": note, "unknown": unknown_words(prompt)})
-        decided = None if old else (slug_for(prompt), False)
-        if decided:
-            self.event({"t": "file", "file": decided[0], "edit": False})
-        out, sent, t0, finished = [], "", time.time(), False
-        with torch.no_grad():
-            for tid, probs in MODEL.generate(torch.tensor([ids]), MAX_TOKENS, greedy=True):
-                if tid in END:
-                    finished = True
-                    break
-                out.append(tid)
-                text = TOK.decode(out, skip_special_tokens=True)
-                if not decided and ("</title>" in text or len(out) > 60):
-                    same = title_of(text) is not None and title_of(text) == title_of(old)
-                    decided = (base, True) if same else (slug_for(prompt), False)
-                    self.event({"t": "file", "file": decided[0], "edit": decided[1]})
-                if decided and len(out) % 3 == 0 and not text.endswith("�"):
-                    self.event({"t": "delta", "text": text[len(sent):]})
-                    sent = text
-        text = TOK.decode(out, skip_special_tokens=True)
-        if not decided:
-            decided = (slug_for(prompt), False)
-            self.event({"t": "file", "file": decided[0], "edit": False})
-        if text[len(sent):]:
-            self.event({"t": "delta", "text": text[len(sent):]})
-        name, edit = decided
-        if edit:
-            (VERSIONS / f"{Path(name).stem}.{int(time.time())}.html").write_text(old, encoding="utf-8")
-        LAST[0] = time.time()
-        (PAGES / name).write_text(text, encoding="utf-8")
-        (PAGES / name).with_suffix(".json").write_text(json.dumps({"prompt": origin if edit else prompt}))
-        secs = time.time() - t0
-        self.event({"t": "done", "file": name, "edit": edit, "tokens": len(out), "secs": round(secs, 1),
-                    "lines": text.count("\n") + 1, "complete": finished})
+        old = (PAGES / base).read_text(encoding="utf-8") if base and (PAGES / base).exists() else None
+        origin = read_meta(base).get("prompt") if old else None
+        name = None
+        for ev in engine.write_page(prompt, old, origin):
+            if ev["t"] == "start":
+                self.event({"t": "start", "note": ev["note"], "unknown": ev["unknown"]})
+                if not old or ev["note"]:
+                    old = None
+            elif ev["t"] == "kind":
+                name = base if ev["edit"] else slug_for(prompt)
+                self.event({"t": "file", "file": name, "edit": ev["edit"]})
+            elif ev["t"] == "delta":
+                self.event(ev)
+            elif ev["t"] == "done":
+                if ev["edit"]:
+                    (VERSIONS / f"{Path(name).stem}.{int(time.time())}.html").write_text(old, encoding="utf-8")
+                LAST[0] = time.time()
+                (PAGES / name).write_text(ev["text"], encoding="utf-8")
+                (PAGES / name).with_suffix(".json").write_text(json.dumps({"prompt": origin if ev["edit"] else prompt}))
+                self.event({"t": "done", "file": name, "edit": ev["edit"], "tokens": ev["tokens"], "secs": ev["secs"],
+                            "lines": ev["text"].count("\n") + 1, "complete": ev["complete"]})
 
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8615
+    engine.ensure_loaded()
     print(f"G-Dev panel on http://localhost:{port}", flush=True)
 
     def reaper():

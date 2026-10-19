@@ -1,0 +1,31 @@
+{
+  "rules": {
+    "status": {
+      ".read": true,
+      "mac": { ".write": "auth.uid === 'W1bxbOEHC9SSSgDNjYeAcFVq4ww2'" }
+    },
+    "open": {
+      ".read": "auth.uid === 'W1bxbOEHC9SSSgDNjYeAcFVq4ww2'",
+      "$client": {
+        ".validate": "$client.length >= 20 && $client.length <= 64",
+        "jobs": {
+          ".read": "auth.uid === 'W1bxbOEHC9SSSgDNjYeAcFVq4ww2'",
+          ".write": true,
+          "$job": {
+            "prompt": { ".validate": "newData.isString() && newData.val().length <= 600" },
+            "base": { ".validate": "newData.isString() && newData.val().length <= 24000" },
+            "origin": { ".validate": "newData.isString() && newData.val().length <= 600" },
+            "at": { ".validate": "newData.isNumber()" },
+            "cancel": { ".validate": "newData.isBoolean()" },
+            "$other": { ".validate": "false" }
+          }
+        },
+        "out": {
+          ".read": true,
+          ".write": "auth.uid === 'W1bxbOEHC9SSSgDNjYeAcFVq4ww2' || !newData.exists()"
+        },
+        "$other": { ".validate": "false" }
+      }
+    }
+  }
+}

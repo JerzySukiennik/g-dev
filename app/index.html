@@ -190,8 +190,156 @@ function setView(v) {
 }
 document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => setView(t.dataset.v)));
 
+const REMOTE = !["localhost", "127.0.0.1"].includes(location.hostname) || location.search.includes("remote");
+const FIREBASE = {
+  apiKey: "AIzaSyBa5pOiEofJPmNbpoJjjeGZHhSrYH7PIn8",
+  authDomain: "gzowo-g-dev.firebaseapp.com",
+  databaseURL: "https://gzowo-g-dev-default-rtdb.firebaseio.com",
+  projectId: "gzowo-g-dev",
+  appId: "1:391006816098:web:fb4f423cf3103bebe08e3b",
+};
+const STALE_AFTER = 70000;
+
+const store = {
+  key: "gdev.pages",
+  all() { try { return JSON.parse(localStorage.getItem(this.key) || "{}"); } catch { return {}; } },
+  put(name, html, prompt) {
+    const all = this.all();
+    all[name] = { html, prompt, time: Date.now() };
+    let names = Object.keys(all).sort((x, y) => all[y].time - all[x].time);
+    for (;;) {
+      const keep = Object.fromEntries(names.map((n) => [n, all[n]]));
+      try { localStorage.setItem(this.key, JSON.stringify(keep)); return; }
+      catch { if (names.length <= 1) return; names = names.slice(0, -1); }
+    }
+  },
+  get(name) { return this.all()[name]; },
+  list() { const all = this.all(); return Object.keys(all).sort((x, y) => all[y].time - all[x].time).map((n) => ({ name: n, prompt: all[n].prompt })); },
+};
+
+function clientId() {
+  let id = null;
+  try { id = localStorage.getItem("gdev.client"); } catch {}
+  if (!id) {
+    id = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    try { localStorage.setItem("gdev.client", id); } catch {}
+  }
+  return id;
+}
+
+const STOPWORDS = new Set("a an the make me create build write generate give please can you i need design with that and on in it of to page which when is nice simple".split(" "));
+function slugFor(prompt) {
+  const core = (prompt.toLowerCase().match(/[a-z0-9]+/g) || []).filter((w) => !STOPWORDS.has(w)).slice(0, 4);
+  const base = (core.join("-") || "page").slice(0, 40);
+  const taken = new Set(store.list().map((f) => f.name));
+  let name = base + ".html", n = 2;
+  while (taken.has(name)) name = `${base}-${n++}.html`;
+  return name;
+}
+
+let fbPromise = null;
+function firebase() {
+  if (!fbPromise) {
+    fbPromise = (async () => {
+      const app = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
+      const rtdb = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js");
+      return { db: rtdb.getDatabase(app.initializeApp(FIREBASE)), ...rtdb };
+    })();
+  }
+  return fbPromise;
+}
+
+const presence = { online: !REMOTE, at: 0 };
+function watchPresence() {
+  firebase().then(({ db, ref, onValue }) => {
+    onValue(ref(db, "status/mac"), (snap) => {
+      const v = snap.val() || {};
+      presence.at = v.at || 0;
+      presence.online = Boolean(v.online) && Date.now() - presence.at < STALE_AFTER;
+      renderPresence();
+    });
+    setInterval(() => { presence.online = presence.online && Date.now() - presence.at < STALE_AFTER; renderPresence(); }, 10000);
+  });
+}
+function renderPresence() {
+  if (busy) return;
+  $("dot").className = "dot " + (presence.online ? "ready" : "");
+  $("state").textContent = presence.online ? "Mac online" : "Mac asleep";
+}
+
+async function listFiles() {
+  return REMOTE ? store.list() : await (await fetch("/api/files")).json();
+}
+async function readPage(name) {
+  if (REMOTE) return store.get(name)?.html || "";
+  return await (await fetch("/pages/" + name + "?t=" + Date.now())).text();
+}
+
+async function generate(prompt, baseName, signal, emit) {
+  if (!REMOTE) return localGenerate(prompt, baseName, signal, emit);
+  return remoteGenerate(prompt, baseName, signal, emit);
+}
+
+async function localGenerate(prompt, baseName, signal, emit) {
+  const res = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt, base: baseName }), signal });
+  if (res.status === 409) throw new Error("the model is busy with another request");
+  if (!res.ok) throw new Error("server error " + res.status);
+  const reader = res.body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const line = buf.slice(0, i); buf = buf.slice(i + 2);
+      if (line.startsWith("data: ")) emit(JSON.parse(line.slice(6)));
+    }
+  }
+}
+
+async function remoteGenerate(prompt, baseName, signal, emit) {
+  if (!presence.online) throw new Error("The Mac that runs G-Dev is asleep right now. Try again later.");
+  const { db, ref, push, set, onValue, off, remove } = await firebase();
+  const client = clientId();
+  const baseRec = baseName ? store.get(baseName) : null;
+  const jobRef = push(ref(db, `open/${client}/jobs`));
+  const id = jobRef.key;
+  const outRef = ref(db, `open/${client}/out/${id}`);
+  await set(jobRef, {
+    prompt, at: Date.now(),
+    ...(baseRec ? { base: baseRec.html.slice(0, 24000), origin: baseRec.prompt || prompt } : {}),
+  });
+  return new Promise((resolve, reject) => {
+    let started = false, filed = false, sent = 0, finished = false;
+    const stop = () => { off(outRef); remove(outRef).catch(() => {}); };
+    const abort = () => { set(ref(db, `open/${client}/jobs/${id}/cancel`), true).catch(() => {}); stop(); reject(Object.assign(new Error("aborted"), { name: "AbortError" })); };
+    if (signal) signal.addEventListener("abort", abort, { once: true });
+    const waiting = setTimeout(() => { if (!started && !finished) { stop(); reject(new Error("No answer from the Mac. It may have gone to sleep, try again.")); } }, 60000);
+    onValue(outRef, (snap) => {
+      const v = snap.val();
+      if (!v || finished) return;
+      if (v.error) { finished = true; clearTimeout(waiting); stop(); return reject(new Error(v.error)); }
+      if (!started && (v.started || v.done)) { started = true; clearTimeout(waiting); emit({ t: "start", unknown: v.unknown || [], note: v.note || null }); }
+      if (!filed && v.edit !== undefined) {
+        filed = true;
+        emit({ t: "file", file: v.edit ? baseName : slugFor(prompt), edit: v.edit });
+      }
+      if (filed && v.text && v.text.length > sent) { emit({ t: "delta", text: v.text.slice(sent) }); sent = v.text.length; }
+      if (v.done) {
+        finished = true;
+        if (!filed) { filed = true; emit({ t: "file", file: slugFor(prompt), edit: false }); }
+        if (v.text && v.text.length > sent) emit({ t: "delta", text: v.text.slice(sent) });
+        emit({ t: "done", file: null, edit: Boolean(v.edit), tokens: v.tokens || 0, secs: v.secs || 0, lines: (v.text || "").split("\n").length, complete: v.complete !== false, text: v.text || "" });
+        stop();
+        resolve();
+      }
+    });
+  });
+}
+
 async function loadFiles(select) {
-  const files = await (await fetch("/api/files")).json();
+  const files = await listFiles();
   const sel = $("files");
   sel.innerHTML = "";
   for (const f of files) {
@@ -202,12 +350,24 @@ async function loadFiles(select) {
   if (select) sel.value = select;
   sel.classList.toggle("hidden", !files.length);
   $("open").classList.toggle("hidden", !files.length);
-  if (sel.value) $("open").href = "/pages/" + sel.value;
+  setOpenLink();
 }
+async function setOpenLink() {
+  const name = $("files").value;
+  if (!name) return;
+  if (REMOTE) { $("open").removeAttribute("href"); $("open").style.cursor = "pointer"; }
+  else $("open").href = "/pages/" + name;
+}
+$("open").addEventListener("click", async (e) => {
+  if (!REMOTE) return;
+  e.preventDefault();
+  const html = await readPage($("files").value);
+  if (html) window.open(URL.createObjectURL(new Blob([html], { type: "text/html" })), "_blank");
+});
 $("files").onchange = async (e) => {
   const name = e.target.value;
-  $("open").href = "/pages/" + name;
-  show(await (await fetch("/pages/" + name)).text());
+  setOpenLink();
+  show(await readPage(name));
   setBase(name);
 };
 
@@ -270,8 +430,9 @@ function esc(s) { return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;
 function setBusy(b) {
   busy = b;
   send.textContent = b ? "Stop" : "Send";
-  $("dot").className = "dot " + (b ? "busy" : "ready");
-  $("state").textContent = b ? "writing" : "ready";
+  if (b) { $("dot").className = "dot busy"; $("state").textContent = "writing"; }
+  else if (REMOTE) renderPresence();
+  else { $("dot").className = "dot ready"; $("state").textContent = "ready"; }
 }
 
 async function go() {
@@ -288,60 +449,52 @@ async function go() {
   controller = new AbortController();
   let write = null, code = null, text = "", file = "", edit = false, lastPreview = 0, info = null, t0 = performance.now();
   const sentBase = base;
-  const oldText = sentBase ? await (await fetch("/pages/" + sentBase + "?t=" + Date.now())).text() : "";
+  const oldText = sentBase ? await readPage(sentBase) : "";
   if (sentBase) { const r = step(steps, `<b>Read</b>(pages/${esc(sentBase)})`, "ok"); sub(r, `${oldText.split("\n").length} lines, sent to the model with your request`); }
-  try {
-    const res = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt, base: sentBase }), signal: controller.signal });
-    if (res.status === 409) throw new Error("the model is busy with another request");
-    if (!res.ok) throw new Error("server error " + res.status);
-    const reader = res.body.getReader(), dec = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let i;
-      while ((i = buf.indexOf("\n\n")) >= 0) {
-        const line = buf.slice(0, i); buf = buf.slice(i + 2);
-        if (!line.startsWith("data: ")) continue;
-        const ev = JSON.parse(line.slice(6));
-        if (ev.t === "start") {
-          if (ev.unknown && ev.unknown.length) {
-            const w = step(steps, "<b>Check</b>(request)", "warn");
-            sub(w, `never seen in training: ${ev.unknown.join(", ")}. G-Dev will fall back to the closest page it knows`, "warnt");
-          } else {
-            const k = step(steps, "<b>Check</b>(request)", "ok");
-            sub(k, "every word appears in the training requests");
-          }
-          if (ev.note) { const w = step(steps, "<b>Context</b>", "warn"); sub(w, ev.note, "warnt"); }
-        } else if (ev.t === "file") {
-          file = ev.file; edit = ev.edit;
-          write = step(steps, `<b>${edit ? "Edit" : "Write"}</b>(pages/${esc(file)})`);
-          const meta = sub(write, "writing…");
-          const tg = el("button", "toggle", "hide");
-          meta.appendChild(tg);
-          code = el("pre", "code");
-          write.appendChild(code);
-          tg.onclick = () => { code.classList.toggle("closed"); tg.textContent = code.classList.contains("closed") ? "show" : "hide"; };
-          write._meta = meta.firstChild;
-          setView("preview");
-        } else if (ev.t === "delta") {
-          text += ev.text;
-          const stick = code.scrollTop + code.clientHeight >= code.scrollHeight - 30;
-          code.textContent = text;
-          if (stick) code.scrollTop = code.scrollHeight;
-          write._meta.textContent = `writing… ${text.split("\n").length} lines `;
-          const now = performance.now();
-          if (now - lastPreview > 1500 && /<body[^>]*>[\s\S]*<\//i.test(text)) { show(text); lastPreview = now; }
-          log.scrollTop = log.scrollHeight;
-        } else if (ev.t === "done") {
-          info = ev;
-        }
+  const handle = (ev) => {
+    if (ev.t === "start") {
+      if (ev.unknown && ev.unknown.length) {
+        const w = step(steps, "<b>Check</b>(request)", "warn");
+        sub(w, `never seen in training: ${ev.unknown.join(", ")}. G-Dev will fall back to the closest page it knows`, "warnt");
+      } else {
+        const k = step(steps, "<b>Check</b>(request)", "ok");
+        sub(k, "every word appears in the training requests");
       }
+      if (ev.note) { const w = step(steps, "<b>Context</b>", "warn"); sub(w, ev.note, "warnt"); }
+    } else if (ev.t === "file") {
+      file = ev.file; edit = ev.edit;
+      write = step(steps, `<b>${edit ? "Edit" : "Write"}</b>(pages/${esc(file)})`);
+      const meta = sub(write, "writing…");
+      const tg = el("button", "toggle", "hide");
+      meta.appendChild(tg);
+      code = el("pre", "code");
+      write.appendChild(code);
+      tg.onclick = () => { code.classList.toggle("closed"); tg.textContent = code.classList.contains("closed") ? "show" : "hide"; };
+      write._meta = meta.firstChild;
+      setView("preview");
+    } else if (ev.t === "delta") {
+      text += ev.text;
+      const stick = code.scrollTop + code.clientHeight >= code.scrollHeight - 30;
+      code.textContent = text;
+      if (stick) code.scrollTop = code.scrollHeight;
+      write._meta.textContent = `writing… ${text.split("\n").length} lines `;
+      const now = performance.now();
+      if (now - lastPreview > 1500 && /<body[^>]*>[\s\S]*<\//i.test(text)) { show(text); lastPreview = now; }
+      log.scrollTop = log.scrollHeight;
+    } else if (ev.t === "done") {
+      info = ev;
     }
+  };
+  try {
+    await generate(prompt, sentBase, controller.signal, handle);
     if (!info) throw new Error("the stream ended early");
+    if (info.file) file = info.file;
+    if (REMOTE) {
+      const origin = edit ? (store.get(file)?.prompt || prompt) : prompt;
+      store.put(file, text, origin);
+    }
     write.className = "step ok";
-    write._meta.textContent = `${info.lines} lines, ${info.tokens} tokens in ${info.secs}s (${(info.tokens / info.secs).toFixed(0)} tok/s) `;
+    write._meta.textContent = `${info.lines} lines, ${info.tokens} tokens in ${info.secs}s (${(info.tokens / Math.max(info.secs, 0.1)).toFixed(0)} tok/s) `;
     code.classList.add("closed");
     write.querySelector(".toggle").textContent = "show";
     if (edit) {
@@ -381,12 +534,19 @@ async function go() {
 
 (async () => {
   try {
-    const s = await (await fetch("/api/status")).json();
-    $("meta").textContent = `${(s.params / 1e6).toFixed(0)}M params · ${s.context} ctx · local CPU, ${s.threads} threads`;
+    if (REMOTE) {
+      $("meta").textContent = "167M params · 2048 ctx · runs on a Mac at home";
+      document.querySelector(".hint").textContent = "Your pages stay in this browser. Each request travels to the Mac that runs the model, which sees your prompt. Only works while that Mac is awake.";
+      watchPresence();
+    } else {
+      const s = await (await fetch("/api/status")).json();
+      $("meta").textContent = `${(s.params / 1e6).toFixed(0)}M params · ${s.context} ctx · local CPU, ${s.threads} threads`;
+    }
     setBusy(false);
+    renderPresence();
     await loadFiles();
     const sel = $("files");
-    if (sel.value) { show(await (await fetch("/pages/" + sel.value)).text()); setBase(sel.value); }
+    if (sel.value) { show(await readPage(sel.value)); setBase(sel.value); }
   } catch {
     $("state").textContent = "server offline";
   }
