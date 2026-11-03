@@ -19,6 +19,11 @@ limitem quoty. Quote liczy sie ze wspolczynnikiem zmierzonym z poprzednich sesji
 Kazde oczekiwanie jest ograniczone do 30 min: time.sleep nie liczy czasu uspienia Maca,
 wiec dlugi sen potrafil przespac odnowienie quoty o pol dnia.
 
+Gdy tools/DONE istnieje (trening i SFT skonczone), lancuch od razu konczy prace: inaczej
+kazdy start Maca (RunAtLoad) robil od nowa faze SFT, galerie i powiadomienie. Status, ktorego
+nie da sie odczytac (brak sieci zaraz po starcie Maca), to UNKNOWN i lancuch czeka; wczesniej
+liczyl sie jako brak sesji i 3.11 odpalil trening od starego checkpointu.
+
 Uruchomienie: LaunchAgent fun.gzowo.g-dev.chain albo .venv/bin/python tools/chain.py
 Zatrzymanie: dotknij tools/STOP.
 """
@@ -87,8 +92,11 @@ def kaggle(*args, timeout=300):
 
 
 def status(name):
-    m = re.search(r"KernelWorkerStatus\.(\w+)", kaggle("kernels", "status", f"{USER}/{name}"))
-    return m.group(1) if m else "NONE"
+    out = kaggle("kernels", "status", f"{USER}/{name}")
+    m = re.search(r"KernelWorkerStatus\.(\w+)", out)
+    if m:
+        return m.group(1)
+    return "NONE" if re.search(r"Cannot access kernel|\b40[34]\b|not found", out, re.I) else "UNKNOWN"
 
 
 def quota():
@@ -200,7 +208,7 @@ def sft_phase(last_ok, st):
         if STOP_FILE.exists():
             return
         s = status(SFT)
-        if s in ("RUNNING", "QUEUED"):
+        if s in ("RUNNING", "QUEUED", "UNKNOWN"):
             time.sleep(POLL)
         elif s == "COMPLETE" and st.get("sft_for") == last_ok:
             break
@@ -242,6 +250,9 @@ def sft_phase(last_ok, st):
 
 
 def main():
+    if DONE_FILE.exists():
+        log("trening i SFT juz skonczone (tools/DONE), nic nie robie")
+        return 0
     st = load_state()
     log("lancuch wystartowal")
     ignore = st.get("ignore", 0)
@@ -251,6 +262,10 @@ def main():
             return 0
         top = max([FIRST + 3, st.get("top", 0) + 3])
         sess = scan(min(top, MAX_SESSION))
+        if "UNKNOWN" in sess.values():
+            log("Kaggle nie odpowiada, czekam")
+            time.sleep(POLL)
+            continue
         existing = [n for n, s in sess.items() if s != "NONE"]
         st["top"] = max(existing, default=0)
         calibrate(st, sess)

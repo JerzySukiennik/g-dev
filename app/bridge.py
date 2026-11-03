@@ -127,7 +127,7 @@ class Bridge:
                     elif line.startswith("data:") and event in ("put", "patch"):
                         self.on_event(json.loads(line[5:]))
                 r.close()
-            except (requests.RequestException, ValueError, OSError) as e:
+            except Exception as e:
                 print(f"[bridge] stream lost: {e}", flush=True)
             time.sleep(3)
 
